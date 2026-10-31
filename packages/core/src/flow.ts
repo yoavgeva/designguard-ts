@@ -150,9 +150,20 @@ export function flowOf(
   };
   visit(function_.body);
 
+  /** Whether a way into a parameter leads to a context or the user asking, as tRPC's `opts` leads to `opts.ctx`. */
+  const leadsToUser = (origin: Origin): boolean =>
+    seedsOf(origin.parameter).some(
+      (spec) =>
+        spec.holds !== "input" &&
+        (spec.path ?? []).length > origin.path.length &&
+        origin.path.every((segment, i) => glob(spec.path?.[i] ?? "").test(segment)),
+    );
+
   const carries = (argument: ts.Expression): boolean => {
-    const holding = holdingOf(valueOf(argument));
+    const value = valueOf(argument);
+    const holding = holdingOf(value);
     if (holding === "context" || holding === "user") return true;
+    if (holding === "wrapper" && value !== undefined && !("derived" in value) && leadsToUser(value)) return true;
     const literal = unwrap(argument);
     return (
       ts.isObjectLiteralExpression(literal) &&

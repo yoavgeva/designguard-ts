@@ -120,7 +120,7 @@ function registered(
   const handler = argument === undefined ? undefined : functionOf(program, checker, argument, claims);
   if (argument === undefined || handler === undefined) return undefined;
   const middleware = call.arguments.slice(0, index).flatMap((before) => middlewareOf(program, checker, before, claims));
-  if (spec.middleware !== undefined) middleware.push(...chainMiddleware(program, checker, call, spec, specs, resolve, claims));
+  if (spec.middleware !== undefined) middleware.unshift(...chainMiddleware(program, checker, call, spec, specs, resolve, claims));
   return {
     handler,
     at: handler === argument ? undefined : argument,
@@ -163,7 +163,8 @@ function chainMiddleware(
       node = declaration !== undefined && ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined;
     } else node = undefined;
   }
-  return found;
+  // Found from the registration outwards; they run from the start of the chain.
+  return found.reverse();
 }
 
 /**
