@@ -91,6 +91,11 @@ export interface ListSpec {
   readonly argument?: number;
   readonly bounds: string;
   readonly runs?: string;
+  /**
+   * Calls or tags in its arguments or its chain's that make it return one row, as Drizzle's `count()` makes
+   * `db.select({ n: count() }).from(t)` do.
+   */
+  readonly aggregates?: string;
 }
 
 /**

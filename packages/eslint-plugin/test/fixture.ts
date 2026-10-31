@@ -56,5 +56,6 @@ export const prisma = {
     { on: "*Delegate.update", kind: "db.write" },
   ],
   lookups: ["*Delegate.findUnique"],
+  lists: [{ on: "*Delegate.findMany", argument: 0, bounds: "{where,take}" }],
   transactions: [{ on: "PrismaClient.$transaction", body: 0 }],
 };

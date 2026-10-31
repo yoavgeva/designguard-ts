@@ -646,6 +646,7 @@ function packaged(resolution: CallSite["resolution"]): { package: string; name: 
  */
 function loadsEveryRow(call: ts.CallExpression, spec: ListSpec): boolean {
   const bounds = glob(spec.bounds);
+  if (spec.aggregates !== undefined && aggregates(call, glob(spec.aggregates))) return false;
   if (spec.argument !== undefined) {
     const argument = call.arguments[spec.argument];
     if (argument === undefined) return true;
@@ -669,9 +670,41 @@ function loadsEveryRow(call: ts.CallExpression, spec: ListSpec): boolean {
   }
   if (names.some((name) => bounds.test(name))) return false;
   if (spec.runs !== undefined) return names.length > 0 && glob(spec.runs).test(names[names.length - 1] ?? "");
+  return runsHere(node);
+}
+
+/**
+ * Whether a thenable query runs where it is: awaited, or returned from an async function, which awaits what it
+ * returns. Kept or returned elsewhere, its caller may add to it first.
+ */
+function runsHere(node: ts.Expression): boolean {
   let outer: ts.Node = node.parent;
-  while (ts.isParenthesizedExpression(outer)) outer = outer.parent;
-  return ts.isAwaitExpression(outer);
+  let inner: ts.Node = node;
+  while (ts.isParenthesizedExpression(outer)) {
+    inner = outer;
+    outer = outer.parent;
+  }
+  if (ts.isAwaitExpression(outer)) return true;
+  const function_ = ts.isReturnStatement(outer)
+    ? ts.findAncestor(outer, ts.isFunctionLike)
+    : ts.isArrowFunction(outer) && outer.body === inner
+      ? outer
+      : undefined;
+  return function_ !== undefined && (ts.getCombinedModifierFlags(function_) & ts.ModifierFlags.Async) !== 0;
+}
+
+/** Whether the arguments of a read, or of the calls in its chain after it, call or tag an aggregate. */
+function aggregates(call: ts.CallExpression, names: RegExp): boolean {
+  const calls: ts.CallExpression[] = [call];
+  for (let node: ts.Node = call; ts.isPropertyAccessExpression(node.parent) && ts.isCallExpression(node.parent.parent); node = node.parent.parent) {
+    calls.push(node.parent.parent);
+  }
+  const visit = (node: ts.Node): boolean => {
+    const named = ts.isCallExpression(node) ? node.expression : ts.isTaggedTemplateExpression(node) ? node.tag : undefined;
+    const name = named === undefined ? undefined : lastName(named);
+    return (name !== undefined && names.test(name)) || (ts.forEachChild(node, visit) ?? false);
+  };
+  return calls.some((each) => each.arguments.some(visit));
 }
 
 /** The last name of a callee: `update` for `prisma.user.update`, `load` for `load`. */

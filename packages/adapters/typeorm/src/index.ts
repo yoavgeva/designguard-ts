@@ -21,4 +21,21 @@ export default defineAdapter({
   ],
   // transaction(run) or transaction(isolationLevel, run).
   transactions: [{ on: "{DataSource,EntityManager}.transaction", body: "last" }],
+  lookups: [`${RECORDS}.{findOne,findOneBy,findOneOrFail,findOneByOrFail}`, "SelectQueryBuilder.{getOne,getOneOrFail}"],
+  // A repository's find(options) and the entity manager's find(Entity, options) load every row unless the options
+  // filter or limit them; a query builder does unless its chain does.
+  lists: [
+    { on: "{Repository,TreeRepository,MongoRepository,BaseEntity}.{find,findAndCount}", argument: 0, bounds: "{where,take}" },
+    { on: "{EntityManager,MongoEntityManager}.{find,findAndCount}", argument: 1, bounds: "{where,take}" },
+    {
+      on: "*.createQueryBuilder",
+      bounds: "{where,andWhere,orWhere,whereInIds,take,limit,groupBy}",
+      runs: "{getMany,getRawMany,getManyAndCount}",
+    },
+  ],
+  writes: [
+    { on: "{Repository,TreeRepository,MongoRepository}.{save,insert,create,upsert}", argument: 0 },
+    { on: "{Repository,TreeRepository,MongoRepository}.update", argument: 1 },
+    { on: "{InsertQueryBuilder.values,UpdateQueryBuilder.set}", argument: 0 },
+  ],
 });

@@ -1,6 +1,7 @@
 import type { TSESLint } from "@typescript-eslint/utils";
 import { noIoInTransactions } from "./rules/no-io-in-transactions.js";
 import { noQueriesInLoops } from "./rules/no-queries-in-loops.js";
+import { noUnboundedQueries } from "./rules/no-unbounded-queries.js";
 import { noUnknownIo } from "./rules/no-unknown-io.js";
 import { readsAreAuthorized } from "./rules/reads-are-authorized.js";
 import { writesAreAuthorized } from "./rules/writes-are-authorized.js";
@@ -8,6 +9,7 @@ import { writesAreAuthorized } from "./rules/writes-are-authorized.js";
 const rules = {
   "no-io-in-transactions": noIoInTransactions,
   "no-queries-in-loops": noQueriesInLoops,
+  "no-unbounded-queries": noUnboundedQueries,
   "no-unknown-io": noUnknownIo,
   "reads-are-authorized": readsAreAuthorized,
   "writes-are-authorized": writesAreAuthorized,

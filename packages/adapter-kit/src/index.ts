@@ -62,7 +62,7 @@ export function entryPointsOf(adapter: Adapter, sample: Sample): string[] {
 export function findingsOf(adapters: readonly Adapter[], sample: Sample): string[] {
   return withSample(sample, (program, file) => {
     const analysis = analyze(program, { adapters });
-    const rules = ["queriesInLoops", "ioInTransactions", "unauthorizedWrites", "unauthorizedReads"] as const;
+    const rules = ["queriesInLoops", "ioInTransactions", "unauthorizedWrites", "unauthorizedReads", "unboundedQueries"] as const;
     return rules
       .flatMap((rule) => analysis[rule](file).map((finding) => ({ rule, finding })))
       .sort((first, second) => first.finding.node.getStart() - second.finding.node.getStart())

@@ -21,4 +21,10 @@ export default defineAdapter({
   ],
   // The interactive form runs its callback in the transaction; the batch form takes an array of queries.
   transactions: [{ on: "*.$transaction", body: 0 }],
+  lookups: ["*.{findUnique,findUniqueOrThrow,findFirst,findFirstOrThrow}"],
+  lists: [{ on: "*.findMany", argument: 0, bounds: "{where,take,cursor}" }],
+  writes: [
+    { on: "*.{create,createMany,createManyAndReturn,update,updateMany,updateManyAndReturn}", argument: 0, property: "data" },
+    { on: "*.upsert", argument: 0, property: "{create,update}" },
+  ],
 });
