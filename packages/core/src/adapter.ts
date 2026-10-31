@@ -35,6 +35,11 @@ export interface Adapter {
   readonly name: string;
   readonly packages: readonly string[];
   /**
+   * The versions of the library the adapter describes, as a semver range such as `>=5 <8`, checked against the first
+   * of `packages` installed. When the installed version is outside it, the adapter is off.
+   */
+  readonly versions?: string;
+  /**
    * Patterns over the paths of project files that belong to the library: code it generates there, such as Prisma's
    * `generated/prisma` folder. Their declarations match the adapter's patterns as the first package's do.
    */

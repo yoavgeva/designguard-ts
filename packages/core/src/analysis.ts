@@ -1,4 +1,6 @@
-import { dirname, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import semver from "semver";
 import ts from "typescript";
 import type { Adapter, EffectKind } from "./adapter.js";
 import { glob } from "./patterns.js";
@@ -53,6 +55,7 @@ export interface ResolutionStats {
 export interface Analysis {
   queriesInLoops(file: ts.SourceFile): Finding[];
   ioInTransactions(file: ts.SourceFile): Finding[];
+  unknownIo(file: ts.SourceFile): Finding[];
   stats(): ResolutionStats;
 }
 
@@ -94,8 +97,18 @@ type Owner = FunctionLike | ts.SourceFile;
  * The analysis reads code only as a question needs it: the loop calls of the file asked about, and the functions
  * those calls reach.
  */
-function build(program: ts.Program, adapters: readonly Adapter[], key: string, root: string): Analysis {
+function build(program: ts.Program, configured: readonly Adapter[], key: string, root: string): Analysis {
   const checker = program.getTypeChecker();
+  const versionOf = installedVersions(program);
+  const inactive = new Map<string, { adapter: Adapter; range: string }>();
+  const adapters = configured.filter((adapter) => {
+    if (adapter.versions === undefined) return true;
+    const installed = adapter.packages.map((name) => versionOf(name)).find((version) => version !== undefined);
+    if (installed === undefined || semver.satisfies(installed, adapter.versions, { includePrerelease: true })) return true;
+    for (const name of adapter.packages) inactive.set(name, { adapter, range: adapter.versions });
+    return false;
+  });
+  const covered = new Set(adapters.flatMap((adapter) => adapter.packages));
   const claims = claimsOf(adapters);
   const matchers = adapters.flatMap((adapter) =>
     (adapter.effects ?? []).map((effect) => ({ packages: adapter.packages, pattern: glob(effect.on), kind: effect.kind })),
@@ -239,6 +252,34 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string, r
       }
       return findings;
     },
+    unknownIo(file) {
+      const findings: Finding[] = [];
+      const seen = new Set<string>();
+      const sites = ownersOf(file)
+        .flatMap((owner) => summaryOf(owner).calls)
+        .sort((first, second) => first.node.getStart() - second.node.getStart());
+      for (const site of sites) {
+        const resolution = site.resolution;
+        if (site.node === site.named || resolution.kind !== "dependency") continue;
+        const name = resolution.package;
+        if (name === "" || covered.has(name) || seen.has(name)) continue;
+        if (checker.getTypeAtLocation(site.node).getProperty("then") === undefined) continue;
+        seen.add(name);
+        const version = versionOf(name);
+        const from = version === undefined ? name : `${name} ${version}`;
+        const off = inactive.get(name);
+        findings.push({
+          node: site.node,
+          message:
+            off === undefined
+              ? `calls ${callee(site.named)}(), from ${from}, which no adapter describes, so designguard can't tell what it does`
+              : `calls ${callee(site.named)}(), from ${from}, which the ${off.adapter.name} adapter doesn't describe: it describes ${off.range}`,
+          at: placeOf(site.owner),
+          reaching: [{ package: name, symbol: resolution.name }],
+        });
+      }
+      return findings;
+    },
     stats() {
       const files = program.getSourceFiles().filter(isProject);
       const stats: ResolutionStats = { files: files.length, functions: 0, calls: 0, project: 0, dependency: 0, lib: 0, unresolvedAny: 0, unresolvedAbstract: 0 };
@@ -258,6 +299,31 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string, r
       }
       return stats;
     },
+  };
+}
+
+/**
+ * The installed version of a package the program uses: from the `package.json` of the folder its declarations come
+ * from, under `node_modules`.
+ */
+function installedVersions(program: ts.Program): (name: string) => string | undefined {
+  const versions = new Map<string, string | undefined>();
+  return (name) => {
+    if (versions.has(name)) return versions.get(name);
+    const marker = `/node_modules/${name}/`;
+    const file = program.getSourceFiles().find((source) => source.fileName.includes(marker));
+    let version: string | undefined;
+    if (file !== undefined) {
+      const folder = file.fileName.slice(0, file.fileName.lastIndexOf(marker) + marker.length);
+      try {
+        const manifest = JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { version?: unknown };
+        version = typeof manifest.version === "string" ? manifest.version : undefined;
+      } catch {
+        version = undefined;
+      }
+    }
+    versions.set(name, version);
+    return version;
   };
 }
 

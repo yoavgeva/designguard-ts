@@ -4,7 +4,19 @@
   "description": "The engine behind designguard's ESLint rules: call resolution, effects and adapters over a TypeScript program.",
   "type": "module",
   "license": "MIT",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
-  "peerDependencies": { "typescript": ">=5.3 <6.1" }
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "typescript": ">=5.3 <6.1"
+  },
+  "dependencies": {
+    "semver": "^7.8.5"
+  }
 }

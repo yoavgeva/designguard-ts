@@ -21,6 +21,7 @@ export function callee(named: ts.Expression): string {
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
 }
 
+/** Text on one line: line breaks and the indentation after them go, other runs of spaces become one. */
 function oneLine(text: string): string {
-  return text.replace(/\s+/g, "");
+  return text.replace(/\s*\n\s*/g, "").replace(/\s+/g, " ");
 }
