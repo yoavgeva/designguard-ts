@@ -245,8 +245,22 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
   const isProject = (file: ts.SourceFile): boolean =>
     isProjectSource(file) && claims(file.fileName) === undefined;
 
-  /** Effects found for every function a finished question reached: complete, since that set holds all they call. */
+  /**
+   * Effects found for every function a finished question reached: complete, since that set holds all they call. Each
+   * has the shortest way there, and among ways as short, the one through the call that comes first, so what a message
+   * names doesn't depend on what was asked before.
+   */
   const final = new Map<Owner, Map<Kind, Trace>>();
+  const finalDepths = new Map<Owner, Map<Kind, number>>();
+  const kindCache = new WeakMap<CallSite, Kind[]>();
+  const kindsAt = (site: CallSite): Kind[] => {
+    let kinds = kindCache.get(site);
+    if (kinds === undefined) {
+      kinds = kindsOf(site);
+      kindCache.set(site, kinds);
+    }
+    return kinds;
+  };
 
   const effectsOf = (owner: Owner): Map<Kind, Trace> => {
     const known = final.get(owner);
@@ -266,26 +280,27 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         }
       }
     }
-    const working = new Map<Owner, Map<Kind, Trace>>();
+    // How many calls away each function is from each kind: 0 for its own calls, then one more than what it calls.
+    const depths = new Map<Owner, Map<Kind, number>>();
+    const depthsOf = (function_: Owner): Map<Kind, number> | undefined => depths.get(function_) ?? finalDepths.get(function_);
     for (const function_ of reached) {
-      const own = new Map<Kind, Trace>();
-      for (const site of summaryOf(function_).calls) {
-        for (const kind of kindsOf(site)) if (!own.has(kind)) own.set(kind, { site, next: undefined });
-      }
-      working.set(function_, own);
+      const own = new Map<Kind, number>();
+      for (const site of summaryOf(function_).calls) for (const kind of kindsAt(site)) own.set(kind, 0);
+      depths.set(function_, own);
     }
     let changed = true;
     while (changed) {
       changed = false;
       for (const function_ of reached) {
-        const own = working.get(function_);
+        const own = depths.get(function_);
         if (own === undefined) continue;
         for (const site of summaryOf(function_).calls) {
           if (site.resolution.kind !== "project") continue;
           for (const target of site.resolution.targets) {
-            for (const [kind, trace] of working.get(target) ?? final.get(target) ?? []) {
-              if (!own.has(kind)) {
-                own.set(kind, { site, next: trace });
+            for (const [kind, depth] of depthsOf(target) ?? []) {
+              const current = own.get(kind);
+              if (current === undefined || depth + 1 < current) {
+                own.set(kind, depth + 1);
                 changed = true;
               }
             }
@@ -293,19 +308,71 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         }
       }
     }
-    for (const [function_, effects] of working) final.set(function_, effects);
+    // The way to each kind: the first call that has it, or that reaches a function one call nearer to it.
+    const traces = new Map<Owner, Map<Kind, Trace>>();
+    const traceOf = (function_: Owner, kind: Kind): Trace | undefined => {
+      const done = final.get(function_);
+      if (done !== undefined) return done.get(kind);
+      let own = traces.get(function_);
+      if (own === undefined) {
+        own = new Map();
+        traces.set(function_, own);
+      }
+      const known = own.get(kind);
+      if (known !== undefined) return known;
+      const depth = depths.get(function_)?.get(kind);
+      if (depth === undefined) return undefined;
+      for (const site of summaryOf(function_).calls) {
+        if (depth === 0) {
+          if (!kindsAt(site).includes(kind)) continue;
+          const trace = { site, next: undefined };
+          own.set(kind, trace);
+          return trace;
+        }
+        if (site.resolution.kind !== "project") continue;
+        for (const target of site.resolution.targets) {
+          if (depthsOf(target)?.get(kind) !== depth - 1) continue;
+          const next = traceOf(target, kind);
+          if (next === undefined) continue;
+          const trace = { site, next };
+          own.set(kind, trace);
+          return trace;
+        }
+      }
+      return undefined;
+    };
+    const built = reached.map((function_) => {
+      const effects = new Map<Kind, Trace>();
+      for (const kind of depths.get(function_)?.keys() ?? []) {
+        const trace = traceOf(function_, kind);
+        if (trace !== undefined) effects.set(kind, trace);
+      }
+      return { function_, effects };
+    });
+    for (const { function_, effects } of built) {
+      final.set(function_, effects);
+      finalDepths.set(function_, depths.get(function_) ?? new Map<Kind, number>());
+    }
     return final.get(owner) ?? new Map<Kind, Trace>();
   };
 
-  /** The effects a call has: its own, or those of the project functions it reaches, with the way there. */
+  /**
+   * The effects a call has: its own, or those of the project functions it reaches, with the way there, through the
+   * nearest of them.
+   */
   const effectsOfCall = (site: CallSite): Map<Kind, Trace> => {
     const found = new Map<Kind, Trace>();
-    for (const kind of kindsOf(site)) found.set(kind, { site, next: undefined });
+    for (const kind of kindsAt(site)) found.set(kind, { site, next: undefined });
     if (site.resolution.kind === "project") {
+      const nearest = new Map<Kind, number>();
       for (const target of site.resolution.targets) {
         if (!isProject(target.getSourceFile())) continue;
-        for (const [kind, trace] of effectsOf(target)) {
-          if (!found.has(kind)) found.set(kind, { site, next: trace });
+        const effects = effectsOf(target);
+        for (const [kind, trace] of effects) {
+          const depth = finalDepths.get(target)?.get(kind) ?? 0;
+          if (found.has(kind) && (nearest.get(kind) ?? -1) <= depth) continue;
+          found.set(kind, { site, next: trace });
+          nearest.set(kind, depth);
         }
       }
     }
