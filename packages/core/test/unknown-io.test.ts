@@ -42,6 +42,21 @@ describe("unknownIo", () => {
     ]);
   });
 
+  it("reads the version of a package typed by @types from its @types package", () => {
+    const { program } = project({
+      "node_modules/@types/async-lock/package.json": JSON.stringify({ name: "@types/async-lock", version: "1.4.2", types: "index.d.ts" }),
+      "node_modules/@types/async-lock/index.d.ts": "declare class AsyncLock { acquire<T>(key: string, fn: () => Promise<T>): Promise<T> } export = AsyncLock;",
+      "src/main.ts": `
+        import AsyncLock from "async-lock";
+        export const run = (lock: AsyncLock) => lock.acquire("k", async () => 1);`,
+    });
+    const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
+    if (main === undefined) throw new Error("no src/main.ts");
+    expect(analyze(program, { adapters: [] }).unknownIo(main).map((finding) => finding.message)).toEqual([
+      "calls lock.acquire(), from async-lock 1.4.2 (types), which no adapter describes, so designguard can't tell what it does",
+    ]);
+  });
+
   it("says when an adapter doesn't describe the installed version", () => {
     const prisma = defineAdapter({ name: "prisma", packages: ["@prisma/client"], versions: ">=7", effects: [] });
     expect(findings([prisma])).toEqual([

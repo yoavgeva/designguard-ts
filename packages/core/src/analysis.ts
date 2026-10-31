@@ -65,6 +65,8 @@ export interface ResolutionStats {
   lib: number;
   unresolvedAny: number;
   unresolvedAbstract: number;
+  /** Calls that open a transaction, as the adapters describe them. */
+  transactions: number;
 }
 
 export interface Analysis {
@@ -325,7 +327,17 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     },
     stats() {
       const files = program.getSourceFiles().filter(isProject);
-      const stats: ResolutionStats = { files: files.length, functions: 0, calls: 0, project: 0, dependency: 0, lib: 0, unresolvedAny: 0, unresolvedAbstract: 0 };
+      const stats: ResolutionStats = {
+        files: files.length,
+        functions: 0,
+        calls: 0,
+        project: 0,
+        dependency: 0,
+        lib: 0,
+        unresolvedAny: 0,
+        unresolvedAbstract: 0,
+        transactions: 0,
+      };
       for (const file of files) {
         for (const owner of ownersOf(file)) {
           stats.functions++;
@@ -333,6 +345,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
             if (site.node === site.named) continue; // a function passed by name, not a call
             stats.calls++;
             const resolution = site.resolution;
+            if (transactions.bodyOf(resolution) !== undefined) stats.transactions++;
             if (resolution.kind === "unresolved") {
               if (resolution.reason === "any") stats.unresolvedAny++;
               else stats.unresolvedAbstract++;
@@ -347,24 +360,25 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
 
 /**
  * The installed version of a package the program uses: from the `package.json` of the folder its declarations come
- * from, under `node_modules`.
+ * from, under `node_modules`, or, for a package typed by `@types`, its types' version, marked `(types)`.
  */
 function installedVersions(program: ts.Program): (name: string) => string | undefined {
   const versions = new Map<string, string | undefined>();
+  const read = (marker: string): string | undefined => {
+    const file = program.getSourceFiles().find((source) => source.fileName.includes(marker));
+    if (file === undefined) return undefined;
+    const folder = file.fileName.slice(0, file.fileName.lastIndexOf(marker) + marker.length);
+    try {
+      const manifest = JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { version?: unknown };
+      return typeof manifest.version === "string" ? manifest.version : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   return (name) => {
     if (versions.has(name)) return versions.get(name);
-    const marker = `/node_modules/${name}/`;
-    const file = program.getSourceFiles().find((source) => source.fileName.includes(marker));
-    let version: string | undefined;
-    if (file !== undefined) {
-      const folder = file.fileName.slice(0, file.fileName.lastIndexOf(marker) + marker.length);
-      try {
-        const manifest = JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { version?: unknown };
-        version = typeof manifest.version === "string" ? manifest.version : undefined;
-      } catch {
-        version = undefined;
-      }
-    }
+    const typed = read(`/node_modules/@types/${name.startsWith("@") ? name.slice(1).replace("/", "__") : name}/`);
+    const version = read(`/node_modules/${name}/`) ?? (typed === undefined ? undefined : `${typed} (types)`);
     versions.set(name, version);
     return version;
   };
