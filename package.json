@@ -1,0 +1,24 @@
+{
+  "name": "designguard-ts",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "tsc -b packages/core packages/eslint-plugin packages/adapters/prisma packages/adapters/drizzle packages/adapters/typeorm packages/adapters/kysely",
+    "typecheck": "pnpm build",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@typescript-eslint/rule-tester": "^8.72.1",
+    "@typescript-eslint/utils": "^8.72.1",
+    "eslint": "^10.14.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@designguard/adapter-prisma",
+  "version": "0.0.0",
+  "description": "designguard's adapter for prisma.",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "dependencies": { "@designguard/core": "workspace:*" }
+}
