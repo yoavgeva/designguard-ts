@@ -1,12 +1,16 @@
-/** A pattern as a regular expression: `*` matches anything, `{a,b}` either alternative. */
+/** A pattern as a regular expression: `*` matches anything, `{a,b}` either alternative, each a pattern itself. */
 export function glob(pattern: string): RegExp {
-  let source = "";
+  return new RegExp(`^${source(pattern)}$`);
+}
+
+function source(pattern: string): string {
+  let result = "";
   for (const part of pattern.split(/(\*|\{[^}]*\})/)) {
-    if (part === "*") source += ".*";
-    else if (part.startsWith("{") && part.endsWith("}")) source += `(?:${part.slice(1, -1).split(",").map(escape).join("|")})`;
-    else source += escape(part);
+    if (part === "*") result += ".*";
+    else if (part.startsWith("{") && part.endsWith("}")) result += `(?:${part.slice(1, -1).split(",").map(source).join("|")})`;
+    else result += escape(part);
   }
-  return new RegExp(`^${source}$`);
+  return result;
 }
 
 function escape(text: string): string {

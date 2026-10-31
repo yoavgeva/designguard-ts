@@ -9,4 +9,5 @@ export default defineAdapter({
     { on: "RelationalQueryBuilder.{findMany,findFirst}", kind: "db.read" },
     { on: "*Database.{insert,update,delete,run}", kind: "db.write" },
   ],
+  transactions: [{ on: "{*Database,*Transaction}.transaction", body: 0 }],
 });

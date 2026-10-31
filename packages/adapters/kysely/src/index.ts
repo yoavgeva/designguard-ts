@@ -11,4 +11,6 @@ export default defineAdapter({
     { on: "RawBuilder.execute", kind: "db.read" },
     { on: `{InsertQueryBuilder,UpdateQueryBuilder,DeleteQueryBuilder,MergeQueryBuilder}.${EXECUTE}`, kind: "db.write" },
   ],
+  // db.transaction().execute(async (trx) => ...)
+  transactions: [{ on: "TransactionBuilder.execute", body: 0 }],
 });

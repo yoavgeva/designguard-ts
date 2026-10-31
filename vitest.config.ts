@@ -9,7 +9,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/*/test/**/*.test.ts"],
+    include: ["packages/*/test/**/*.test.ts", "packages/adapters/*/test/**/*.test.ts"],
     testTimeout: 60_000,
   },
 });

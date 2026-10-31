@@ -4,7 +4,19 @@
   "description": "designguard's adapter for typeorm.",
   "type": "module",
   "license": "MIT",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
-  "dependencies": { "@designguard/core": "workspace:*" }
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@designguard/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@designguard/adapter-kit": "workspace:*"
+  }
 }

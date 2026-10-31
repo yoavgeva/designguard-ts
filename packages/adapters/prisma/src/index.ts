@@ -19,4 +19,6 @@ export default defineAdapter({
       kind: "db.write",
     },
   ],
+  // The interactive form runs its callback in the transaction; the batch form takes an array of queries.
+  transactions: [{ on: "*.$transaction", body: 0 }],
 });

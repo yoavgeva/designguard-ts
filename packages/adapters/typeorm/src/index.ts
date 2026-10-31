@@ -19,4 +19,6 @@ export default defineAdapter({
     { on: "{InsertQueryBuilder,UpdateQueryBuilder,DeleteQueryBuilder,SoftDeleteQueryBuilder}.execute", kind: "db.write" },
     { on: "QueryRunner.query", kind: "db.write" },
   ],
+  // transaction(run) or transaction(isolationLevel, run).
+  transactions: [{ on: "{DataSource,EntityManager}.transaction", body: "last" }],
 });

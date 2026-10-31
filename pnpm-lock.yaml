@@ -47,24 +47,40 @@ importers:
       '@designguard/core':
         specifier: workspace:*
         version: link:../../core
+    devDependencies:
+      '@designguard/adapter-kit':
+        specifier: workspace:*
+        version: link:../../adapter-kit
 
   packages/adapters/kysely:
     dependencies:
       '@designguard/core':
         specifier: workspace:*
         version: link:../../core
+    devDependencies:
+      '@designguard/adapter-kit':
+        specifier: workspace:*
+        version: link:../../adapter-kit
 
   packages/adapters/prisma:
     dependencies:
       '@designguard/core':
         specifier: workspace:*
         version: link:../../core
+    devDependencies:
+      '@designguard/adapter-kit':
+        specifier: workspace:*
+        version: link:../../adapter-kit
 
   packages/adapters/typeorm:
     dependencies:
       '@designguard/core':
         specifier: workspace:*
         version: link:../../core
+    devDependencies:
+      '@designguard/adapter-kit':
+        specifier: workspace:*
+        version: link:../../adapter-kit
 
   packages/core:
     dependencies:
