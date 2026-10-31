@@ -67,11 +67,18 @@ describe("unauthorizedWrites", () => {
           app.get("/orders/:id/view", async (req) => {
             await prisma.user.update({ where: { id: req.params.id }, data: {} });
           });
-          app.delete("/orders/:id", remove);`,
+          app.delete("/orders/:id", remove);
+          app.post("/users/:id", async (req) => {
+            await req.db.user.update({ where: { id: req.params.id }, data: {} });
+          });
+          app.post("/users/:id/mine", async (req) => {
+            await req.db.user.update({ where: { id: req.params.id, ownerId: req.locals.user?.id }, data: {} });
+          });`,
       }),
     ).toEqual([
       "7: the POST /orders/:id/cancel handler writes to the database through cancelOrder(), which reaches prisma.user.update() (src/orders.ts:4) with nothing checking that the user asking may",
       "18: the DELETE /orders/:id handler writes to the database through remove(), which reaches prisma.user.update() (src/orders.ts:10) with nothing checking that the user asking may",
+      "20: the POST /users/:id handler writes to the database through req.db.user.update() with nothing checking that the user asking may",
     ]);
   });
 

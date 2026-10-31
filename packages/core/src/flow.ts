@@ -30,6 +30,9 @@ export interface Flow {
   inputArguments(call: ts.CallLikeExpression): number[];
 }
 
+/** What a request's context keeps values for its code in, as Express's `res.locals` and Hono's `c.var` do. */
+const BAGS = new Set(["var", "locals", "state", "data", "context", "ctx", "req", "request", "raw", "get()"]);
+
 /** Where a value comes from: a parameter, and the way into it, as `["params", "id"]` for `req.params.id`. */
 interface Origin {
   readonly parameter: number;
@@ -69,7 +72,14 @@ export function flowOf(
     if (best.spec.holds !== "context") return best.spec.holds;
     const rest = origin.path.slice(best.length);
     if (rest.length === 0) return "context";
-    return rest.some((segment) => isUserName(segment.replace(/\(\)$/, ""))) ? "user" : "beneath";
+    // The user asking is a context's own property, or one of a bag it keeps them in, as `res.locals.user` is; under
+    // anything else, as `ctx.db.user` is a table, a name for them is something else.
+    for (const segment of rest) {
+      const name = segment.replace(/\(\)$/, "");
+      if (isUserName(name)) return "user";
+      if (!BAGS.has(name)) return "beneath";
+    }
+    return "beneath";
   };
 
   const holdingOf = (value: Value | undefined): Holding | "beneath" | "wrapper" | undefined =>

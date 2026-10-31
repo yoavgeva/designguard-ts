@@ -83,6 +83,8 @@ export const routerStub = stubPackage(
      body: unknown;
      user?: { id: string };
      workspace?: { id: string };
+     db: import("@prisma/client").PrismaClient;
+     locals: { user?: { id: string } };
    }
    export interface Response { json(value: unknown): void }
    export type Handler = (req: Request, res: Response, next: () => void) => unknown;
