@@ -202,7 +202,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       }
     }
     for (const [function_, effects] of working) final.set(function_, effects);
-    return final.get(owner) ?? new Map();
+    return final.get(owner) ?? new Map<EffectKind, Trace>();
   };
 
   /** The effects a call has: its own, or those of the project functions it reaches, with the way there. */
@@ -228,7 +228,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     if (last === trace) return first;
     const file = last.site.node.getSourceFile();
     const line = file.getLineAndCharacterOfPosition(last.site.node.getStart()).line + 1;
-    return `${first}, which reaches ${callee(last.site.named)}() (${relative(root, file.fileName)}:${line})`;
+    return `${first}, which reaches ${callee(last.site.named)}() (${relative(root, file.fileName)}:${String(line)})`;
   };
 
   return {
@@ -238,7 +238,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         if (site.loop === undefined) continue;
         const found = effectsOfCall(site);
         const trace = found.get("db.read") ?? found.get("db.write");
-        if (trace !== undefined && site.loop !== undefined) {
+        if (trace !== undefined) {
           findings.push({
             node: site.node,
             message: `queries the database once per item: ${site.loop.label} calls ${describe(trace)}`,

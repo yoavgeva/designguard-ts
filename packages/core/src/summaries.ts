@@ -97,7 +97,7 @@ export function nameOf(owner: Owner): string {
   if (own !== undefined && ts.isClassLike(parent)) return `${className(parent)}.${own}`;
   if (own !== undefined && ts.isObjectLiteralExpression(parent)) {
     const holder = parent.parent;
-    return holder !== undefined && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name) ? `${holder.name.text}.${own}` : own;
+    return ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name) ? `${holder.name.text}.${own}` : own;
   }
   if (own !== undefined) return own;
   if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;

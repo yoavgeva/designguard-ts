@@ -16,7 +16,7 @@ function findings(files: Record<string, string>): string[] {
   if (main === undefined) throw new Error("no src/main.ts");
   return analyze(program, { adapters: [prisma] })
     .ioInTransactions(main)
-    .map((finding) => `${main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1}: ${finding.message}`);
+    .map((finding) => `${String(main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1)}: ${finding.message}`);
 }
 
 const notify = `

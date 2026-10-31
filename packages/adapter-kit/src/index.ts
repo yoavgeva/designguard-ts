@@ -58,7 +58,7 @@ export function rolesOf(adapter: Adapter, sample: Sample): string[] {
         const what =
           role.off !== undefined
             ? `, off: ${role.off}`
-            : `${role.effect === undefined ? "" : `, ${role.effect}`}${role.transaction === undefined ? "" : `, transaction running its argument ${role.transaction}`}`;
+            : `${role.effect === undefined ? "" : `, ${role.effect}`}${role.transaction === undefined ? "" : `, transaction running its argument ${String(role.transaction)}`}`;
         return `${role.callee}(): ${role.package} ${role.name}${what}`;
       });
   } finally {

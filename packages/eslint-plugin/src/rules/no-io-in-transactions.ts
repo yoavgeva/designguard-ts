@@ -8,8 +8,8 @@ export const noIoInTransactions = createRule<[SharedOptions], "finding">({
     docs: { description: "Disallow HTTP requests, mail and messages inside a database transaction, directly or through other functions" },
     messages: { finding: "{{message}}" },
     schema: [sharedSchema],
+    defaultOptions: [{}],
   },
-  defaultOptions: [{}],
   create(context) {
     const { analysis, file, root } = analysisFor(context);
     return {

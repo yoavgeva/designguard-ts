@@ -6,7 +6,7 @@ import type ts from "typescript";
 
 /** The adapters listed in `settings.designguard.adapters`. */
 function adaptersOf(settings: TSESLint.SharedConfigurationSettings): readonly Adapter[] {
-  const designguard = settings["designguard"] as { adapters?: unknown } | undefined;
+  const designguard = settings.designguard as { adapters?: unknown } | undefined;
   const adapters = designguard?.adapters ?? [];
   if (!Array.isArray(adapters)) throw new Error("settings.designguard.adapters must be a list of adapters");
   return adapters as Adapter[];
@@ -36,7 +36,7 @@ export function analysisFor(context: Readonly<TSESLint.RuleContext<string, reado
   const started = performance.now();
   const analysis = analyze(program, { adapters: adaptersOf(context.settings), root });
   // DESIGNGUARD_STATS names a file to append one line of resolution statistics to per program analyzed.
-  const statsFile = process.env["DESIGNGUARD_STATS"];
+  const statsFile = process.env.DESIGNGUARD_STATS;
   if (statsFile !== undefined && statsFile !== "" && !reported.has(program)) {
     reported.add(program);
     appendFileSync(statsFile, `${JSON.stringify({ ...analysis.stats(), milliseconds: Math.round(performance.now() - started) })}\n`);
@@ -50,7 +50,7 @@ export function reportAll(
   findings: readonly Finding[],
   root: string,
 ): void {
-  const options = context.options[0] ?? {};
+  const options = context.options[0];
   for (const finding of findings) if (reportable(finding, options, root)) report(context, finding);
 }
 

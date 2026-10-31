@@ -28,7 +28,7 @@ function resolutions(files: Record<string, string>) {
 
 function describeDeclaration(node: ts.Node): string {
   const file = node.getSourceFile().fileName.replace(/^.*\/src\//, "");
-  const owner = node.parent !== undefined && ts.isClassDeclaration(node.parent) && node.parent.name !== undefined ? `${node.parent.name.text}.` : "";
+  const owner = ts.isClassDeclaration(node.parent) && node.parent.name !== undefined ? `${node.parent.name.text}.` : "";
   const name = (node as ts.NamedDeclaration).name;
   return `${file}#${owner}${name !== undefined && ts.isIdentifier(name) ? name.text : "<anonymous>"}`;
 }

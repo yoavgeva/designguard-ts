@@ -88,7 +88,7 @@ function implementations(program: ts.Program, checker: ts.TypeChecker, declarati
   const overloads = (symbol?.declarations ?? []).filter(hasBody);
   if (overloads.length > 0) return overloads;
   const owner = declaration.parent;
-  if (symbol === undefined || owner === undefined || !(ts.isInterfaceDeclaration(owner) || ts.isClassLike(owner))) return [];
+  if (symbol === undefined || !(ts.isInterfaceDeclaration(owner) || ts.isClassLike(owner))) return [];
   const ownerSymbol = owner.name === undefined ? undefined : checker.getSymbolAtLocation(owner.name);
   if (ownerSymbol === undefined) return [];
   const found: FunctionLike[] = [];

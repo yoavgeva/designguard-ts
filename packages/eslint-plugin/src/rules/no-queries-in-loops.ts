@@ -8,8 +8,8 @@ export const noQueriesInLoops = createRule<[SharedOptions], "finding">({
     docs: { description: "Disallow database queries made once per item of a loop, directly or through other functions: N+1" },
     messages: { finding: "{{message}}" },
     schema: [sharedSchema],
+    defaultOptions: [{}],
   },
-  defaultOptions: [{}],
   create(context) {
     const { analysis, file, root } = analysisFor(context);
     return {

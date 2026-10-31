@@ -31,7 +31,7 @@ function findings(adapters: Parameters<typeof analyze>[1]["adapters"]): string[]
   if (main === undefined) throw new Error("no src/main.ts");
   return analyze(program, { adapters })
     .unknownIo(main)
-    .map((finding) => `${main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1}: ${finding.message}`);
+    .map((finding) => `${String(main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1)}: ${finding.message}`);
 }
 
 describe("unknownIo", () => {

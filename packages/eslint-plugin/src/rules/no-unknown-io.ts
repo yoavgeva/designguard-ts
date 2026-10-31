@@ -11,8 +11,8 @@ export const noUnknownIo = createRule<[SharedOptions], "finding">({
     },
     messages: { finding: "{{message}}" },
     schema: [sharedSchema],
+    defaultOptions: [{}],
   },
-  defaultOptions: [{}],
   create(context) {
     const { analysis, file, root } = analysisFor(context);
     return {
