@@ -17,8 +17,8 @@
     "@types/semver": "^7.8.0",
     "@typescript-eslint/rule-tester": "^8.72.1",
     "@typescript-eslint/utils": "^8.72.1",
-    "eslint": "^10.14.0",
-    "typescript": "~6.0.3",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
     "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.5"
   }

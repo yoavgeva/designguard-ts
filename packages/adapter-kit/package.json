@@ -4,8 +4,22 @@
   "description": "Write and test designguard adapters: what a library's calls do, checked against typed samples.",
   "type": "module",
   "license": "MIT",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
-  "dependencies": { "@designguard/core": "workspace:*" },
-  "peerDependencies": { "typescript": ">=5.3 <6.1" }
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@designguard/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.3 <6.1"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
 }

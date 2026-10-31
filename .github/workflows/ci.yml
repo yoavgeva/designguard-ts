@@ -17,8 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         node: [20, 22, 24]
-        eslint: ["9", "10"]
-        typescript: ["5.9", "6.0"]
+        eslint: ["^9.15.0", "^10.0.0"]
+        typescript: ["~5.9.0", "~6.0.0"]
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -26,9 +26,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # The versions the plugin supports, in place of the ones the workspace pins.
-      - run: pnpm add -w -D eslint@${{ matrix.eslint }} typescript@${{ matrix.typescript }}
+      # The versions the plugin supports, in place of the ones the workspace's catalog pins, for every package at once.
+      - run: |
+          sed -i -E 's/^  typescript: .*/  typescript: "${{ matrix.typescript }}"/; s/^  eslint: .*/  eslint: "${{ matrix.eslint }}"/' pnpm-workspace.yaml
+      - run: pnpm install --no-frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
