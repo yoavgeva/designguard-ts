@@ -322,6 +322,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     };
     const flow = flowOf(checker, entry.handler, entry.parameters, entry.decoratorsOf);
     if (flow.readsUser !== undefined) return `reads the user asking: ${oneLine(flow.readsUser.getText())} (${where(flow.readsUser)})`;
+    if (flow.readsSecret !== undefined) return `checks a secret the request sends: ${oneLine(flow.readsSecret.getText())} (${where(flow.readsSecret)})`;
     for (const site of summaryOf(entry.handler).calls) {
       if ((ts.isCallExpression(site.node) || ts.isNewExpression(site.node)) && flow.carriesUser(site.node)) {
         return `gives the user asking or its context to ${callee(site.named)}() (${where(site.node)})`;

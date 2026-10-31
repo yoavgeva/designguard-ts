@@ -2,7 +2,7 @@ import ts from "typescript";
 import type { ParameterSpec } from "./adapter.js";
 import { glob } from "./patterns.js";
 import type { FunctionLike } from "./resolve.js";
-import { isUserName } from "./words.js";
+import { isSecretName, isUserName } from "./words.js";
 
 /** What a value in a function holds, as its parameters' specs tell. */
 export type Holding = "input" | "context" | "user";
@@ -15,6 +15,11 @@ export type Holding = "input" | "context" | "user";
 export interface Flow {
   /** Where the function reads the user asking, taking them or reading them from a context, if it does. */
   readonly readsUser: ts.Node | undefined;
+  /**
+   * Where the function reads a secret the request sends, as a token in an unsubscribe link or a webhook's signature,
+   * which proves the request may do what it asks, if it does.
+   */
+  readonly readsSecret: ts.Node | undefined;
   /** Whether a call gives the user asking, or a context holding them, to the code it calls. */
   carriesUser(call: ts.CallLikeExpression): boolean;
   /** Whether an expression holds what the request sent, or a value made from it. */
@@ -90,9 +95,12 @@ export function flowOf(
     return undefined;
   };
 
-  const seen: { user: ts.Node | undefined } = { user: undefined };
-  const note = (value: Value | undefined, at: ts.Node): void => {
-    if (seen.user === undefined && holdingOf(value) === "user") seen.user = at;
+  const seen: { user: ts.Node | undefined; secret: ts.Node | undefined } = { user: undefined, secret: undefined };
+  /** Notes what a value read at `at`, by the name it has there, as `token` in `req.params.token`, holds. */
+  const note = (value: Value | undefined, at: ts.Node, name: string | undefined): void => {
+    const holding = holdingOf(value);
+    if (seen.user === undefined && holding === "user") seen.user = at;
+    if (seen.secret === undefined && holding === "input" && name !== undefined && isSecretName(name)) seen.secret = at;
   };
 
   const fromInput = (node: ts.Node): boolean => {
@@ -116,7 +124,7 @@ export function flowOf(
       const kept = value ?? (initializer !== undefined && fromInput(initializer) ? { derived: "input" as const } : undefined);
       if (kept !== undefined) {
         values.set(symbol, kept);
-        note(kept, name);
+        note(kept, name, name.text);
       }
       return;
     }
@@ -145,7 +153,12 @@ export function flowOf(
       bind(node.name, node.initializer === undefined ? undefined : valueOf(node.initializer), node.initializer);
       return;
     }
-    if (ts.isExpression(node) && stepOf(node) !== undefined) note(valueOf(node), node);
+    const step = ts.isExpression(node) ? stepOf(node) : undefined;
+    if (step !== undefined) {
+      // A method given the name of what it reads, as `c.req.param("token")` and `req.header("x-signature")` are.
+      const key = ts.isCallExpression(node) ? node.arguments[0] : undefined;
+      note(valueOf(node as ts.Expression), node, key !== undefined && ts.isStringLiteralLike(key) ? key.text : step.name);
+    }
     ts.forEachChild(node, visit);
   };
   visit(function_.body);
@@ -186,6 +199,7 @@ export function flowOf(
 
   return {
     readsUser: seen.user,
+    readsSecret: seen.secret,
     carriesUser: (call) => argumentsOf(call).some(carries),
     fromInput,
     wholeInput,

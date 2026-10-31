@@ -73,6 +73,10 @@ export function entriesOf(program: ts.Program, checker: ts.TypeChecker, file: ts
         }
       }
     }
+    if (ts.isVariableDeclaration(node)) {
+      const entry = wrappedExport(program, checker, node, specs.specs, claims);
+      if (entry !== undefined) found.push(entry);
+    }
     if (isFunctionWithBody(node)) {
       const spec =
         (fileDirective !== undefined && isExported(node) ? fileDirective : undefined) ??
@@ -213,16 +217,50 @@ function functionOf(program: ts.Program, checker: ts.TypeChecker, argument: ts.E
   return !isProjectSource(file) || claims(file.fileName) !== undefined ? undefined : target;
 }
 
+/**
+ * A route handler exported as what a call makes of a function, as `export const POST = respond(handler)` exports: the
+ * function is the handler, and the call runs before it, as middleware does.
+ */
+function wrappedExport(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  node: ts.VariableDeclaration,
+  specs: readonly EntryPointSpec[],
+  claims: Claims,
+): EntryPoint | undefined {
+  const statement = node.parent.parent;
+  const call = node.initializer;
+  if (!ts.isIdentifier(node.name) || !ts.isVariableStatement(statement) || !hasExport(statement) || call === undefined || !ts.isCallExpression(call)) {
+    return undefined;
+  }
+  const name = node.name.text;
+  for (let index = call.arguments.length - 1; index >= 0; index--) {
+    const argument = call.arguments[index];
+    const handler = argument === undefined ? undefined : functionOf(program, checker, argument, claims);
+    if (argument === undefined || handler === undefined) continue;
+    const spec = specs.find((candidate) => candidate.exports !== undefined && glob(candidate.exports).test(name) && takes(checker, handler, candidate));
+    if (spec === undefined) return undefined;
+    return {
+      ...declared(handler, `${name}()`, spec, []),
+      at: handler === argument ? undefined : argument,
+      middleware: middlewareOf(program, checker, call.expression, claims),
+    };
+  }
+  return undefined;
+}
+
+/** Whether a handler's first parameter's type, or a type it extends, matches a spec's `takes`. */
+function takes(checker: ts.TypeChecker, handler: FunctionLike, spec: EntryPointSpec): boolean {
+  if (spec.takes === undefined) return true;
+  const first = handler.parameters[0];
+  return first !== undefined && typeNames(checker, checker.getTypeAtLocation(first)).some((type) => glob(spec.takes ?? "").test(type));
+}
+
 /** The spec whose `exports` names an exported function and whose `takes` its first parameter's type matches. */
 function exportsSpec(checker: ts.TypeChecker, node: FunctionLike, specs: readonly EntryPointSpec[]): EntryPointSpec | undefined {
   const name = exportedName(node);
   if (name === undefined) return undefined;
-  return specs.find((spec) => {
-    if (spec.exports === undefined || !glob(spec.exports).test(name)) return false;
-    if (spec.takes === undefined) return true;
-    const first = node.parameters[0];
-    return first !== undefined && typeNames(checker, checker.getTypeAtLocation(first)).some((type) => glob(spec.takes ?? "").test(type));
-  });
+  return specs.find((spec) => spec.exports !== undefined && glob(spec.exports).test(name) && takes(checker, node, spec));
 }
 
 /** The names of a type, the types it's a union of, and the types it extends. */

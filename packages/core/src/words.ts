@@ -17,6 +17,15 @@ const ASKING = new Set(["current", "me", "my", "whoami", "logged", "signed", "au
 /** What a call that fetches the user asking with no arguments starts with: `getSession()`, `requireUser()`. */
 const FETCHING = new Set(["get", "require", "ensure", "assert", "validate", "verify", "check", "load", "read", "fetch", "use"]);
 
+/** Words that name a secret a request can prove itself with: a token in a link, a webhook's signature, an API key. */
+const SECRET = new Set(["token", "secret", "signature", "otp", "nonce", "hmac", "passcode"]);
+
+/** Whether a name names a secret, as `token`, `x-signature` and `apiKey` do. */
+export function isSecretName(name: string): boolean {
+  const words = wordsOf(name);
+  return words.some((word) => SECRET.has(word)) || (words.includes("api") && words.includes("key"));
+}
+
 /** Whether a property or variable name names the user asking, when it's read from a request's context. */
 export function isUserName(name: string): boolean {
   return wordsOf(name).some((word) => USER.has(word));
@@ -60,7 +69,7 @@ const CHECKING = new Set([
 
 /** Words that name a check when a name starts by asking: `isAdmin`, `requireAccess`, `hasRole`, `checkOwnership`. */
 const CHECKED = new Set(["access", "owner", "owns", "ownership", "role", "roles", "admin", "member", "membership", "staff", "superuser", "scope", "scopes"]);
-const ASKS = new Set(["has", "check", "require", "assert", "ensure", "verify", "validate", "is", "must", "can", "only"]);
+const ASKS = new Set(["has", "check", "require", "requires", "assert", "ensure", "verify", "validate", "is", "must", "can", "only", "with"]);
 
 /** Whether a function, method or decorator by this name checks what the user asking may do. */
 export function isCheckName(name: string): boolean {

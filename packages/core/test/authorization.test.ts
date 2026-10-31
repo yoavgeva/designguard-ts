@@ -128,6 +128,14 @@ describe("unauthorizedWrites", () => {
           });
           app.post("/f/:id", authenticate, async (req) => {
             await prisma.user.update({ where: { id: req.params.id }, data: {} });
+          });
+          app.post("/unsubscribe/:token", async (req) => {
+            const subscriber = await prisma.user.findUnique({ where: { token: req.params.token } });
+            await prisma.user.update({ where: { id: subscriber?.id }, data: {} });
+          });
+          app.post("/hooks", async (req) => {
+            const signature = req.params["x-signature"];
+            await prisma.user.update({ where: { id: String(signature) }, data: {} });
           });`,
       }),
     ).toEqual([
@@ -230,6 +238,27 @@ describe("standard entry points", () => {
       }`;
     expect(findings("unauthorizedWrites", { "src/main.ts": routes })).toEqual([
       "5: POST() writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+    expect(
+      findings("unauthorizedWrites", {
+        "src/respond.ts": `
+          export function respond(handler: (request: Request) => Promise<Response>) { return handler; }
+          export function withAdmin(handler: (request: Request) => Promise<Response>) { return handler; }`,
+        "src/main.ts": `
+          import { prisma } from "./db.js";
+          import { respond, withAdmin } from "./respond.js";
+          async function remove(request: Request) {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          }
+          export const DELETE = respond(remove);
+          export const PATCH = withAdmin(async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          });`,
+      }),
+    ).toEqual([
+      "8: DELETE() writes to the database through remove(), which reaches prisma.user.update() (src/main.ts:5) with nothing checking that the user asking may",
     ]);
     expect(findings("unauthorizedReads", { "src/main.ts": routes })).toEqual([
       "10: GET() reads a record by a key the request sends through prisma.user.findUnique(): nothing checks that the user asking may see it",
