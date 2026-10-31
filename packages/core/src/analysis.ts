@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import semver from "semver";
 import ts from "typescript";
-import type { Adapter, EffectKind, EntryPointSpec, ListSpec } from "./adapter.js";
+import type { Adapter, EffectKind, EntryPointSpec, ListSpec, WriteSpec } from "./adapter.js";
 import { glob } from "./patterns.js";
 import { type FunctionLike, isProjectSource, resolveCall } from "./resolve.js";
 import { callee, oneLine } from "./names.js";
@@ -99,6 +99,8 @@ export interface Analysis {
   unauthorizedReads(file: ts.SourceFile): Finding[];
   /** Request handlers that load every row of a table. */
   unboundedQueries(file: ts.SourceFile): Finding[];
+  /** Request handlers that save what the request sends as it is, when it has a property the request shouldn't set. */
+  massAssignments(file: ts.SourceFile): Finding[];
   unknownIo(file: ts.SourceFile): Finding[];
   /** What the adapters make of each call a file makes into a package, in the order the calls start. */
   roles(file: ts.SourceFile): Role[];
@@ -327,10 +329,16 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       if ((ts.isCallExpression(site.node) || ts.isNewExpression(site.node)) && flow.carriesUser(site.node)) {
         return `gives the user asking or its context to ${callee(site.named)}() (${where(site.node)})`;
       }
-      const found = effectsOfCall(site);
-      const user = found.get("user");
+      const user = effectsOfCall(site).get("user");
       if (user !== undefined) return `gets the user asking through ${describe(user)}`;
-      const check = found.get("check");
+    }
+    return whyChecked(entry);
+  };
+
+  /** Why a handler counts as checking permissions: what it reaches, its middleware or its decorators do. */
+  const whyChecked = (entry: EntryPoint): string | undefined => {
+    for (const site of summaryOf(entry.handler).calls) {
+      const check = effectsOfCall(site).get("check");
       if (check !== undefined) return `checks permissions through ${describe(check)}`;
     }
     for (const middleware of entry.middleware) {
@@ -407,6 +415,69 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     lookups.set(key, found ?? null);
     return found;
   };
+  const writeMatchers = adapters.flatMap((adapter) =>
+    (adapter.writes ?? []).map((spec) => ({ packages: adapter.packages, pattern: glob(spec.on), spec })),
+  );
+
+  /** The properties of what a write saves that the request sends and shouldn't set, as `role`. */
+  const settable = (data: ts.Expression, flow: ReturnType<typeof flowOf>): string[] => {
+    const expression = unwrapped(data);
+    const from = new Map<string, "input" | "code">();
+    const propertiesOf = (node: ts.Expression): string[] => {
+      const parent = node.parent;
+      const symbol = ts.isShorthandPropertyAssignment(parent) && parent.name === node ? checker.getShorthandAssignmentValueSymbol(parent) : undefined;
+      const type = symbol === undefined ? checker.getTypeAtLocation(node) : checker.getTypeOfSymbolAtLocation(symbol, node);
+      return type.getApparentProperties().map((property) => property.getName());
+    };
+    if (ts.isObjectLiteralExpression(expression)) {
+      for (const property of expression.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          if (flow.wholeInput(property.expression)) for (const name of propertiesOf(property.expression)) from.set(name, "input");
+        } else if (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)) {
+          from.set(property.name.text, "code");
+        }
+      }
+    } else if (flow.wholeInput(expression)) for (const name of propertiesOf(data)) from.set(name, "input");
+    return [...from].filter(([name, source]) => source === "input" && PRIVILEGED.has(name)).map(([name]) => name);
+  };
+
+  /**
+   * The first write a function makes of what the request sends as it is, itself or through the project functions it
+   * gives it to, with the properties the request can set that way. `key` names the function and its input.
+   */
+  const assignments = new Map<string, { trace: Trace; fields: string[] } | null>();
+  const assignmentBy = (function_: FunctionLike, flow: ReturnType<typeof flowOf>, key: string): { trace: Trace; fields: string[] } | undefined => {
+    const known = assignments.get(key);
+    if (known !== undefined) return known ?? undefined;
+    assignments.set(key, null);
+    let found: { trace: Trace; fields: string[] } | undefined;
+    for (const site of summaryOf(function_).calls) {
+      if (!ts.isCallExpression(site.node)) continue;
+      const target = packaged(site.resolution);
+      const spec = target === undefined ? undefined : writeMatchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name))?.spec;
+      if (spec !== undefined) {
+        const fields = dataOf(site.node, spec).flatMap((data) => settable(data, flow));
+        if (fields.length > 0) found = { trace: { site, next: undefined }, fields: [...new Set(fields)] };
+      } else if (site.resolution.kind === "project") {
+        const call = site.node;
+        const whole = call.arguments.flatMap((argument, index) => (flow.wholeInput(argument) ? [index] : []));
+        if (whole.length === 0) continue;
+        for (const target of site.resolution.targets) {
+          if (!isProject(target.getSourceFile())) continue;
+          const inner = flowOf(checker, target, whole.map((at) => ({ at, holds: "input" as const })));
+          const next = assignmentBy(target, inner, `${String(idOf(target))}:${whole.join(",")}`);
+          if (next !== undefined) {
+            found = { trace: { site, next: next.trace }, fields: next.fields };
+            break;
+          }
+        }
+      }
+      if (found !== undefined) break;
+    }
+    assignments.set(key, found ?? null);
+    return found;
+  };
+
   return {
     unauthorizedWrites(file) {
       const findings: Finding[] = [];
@@ -430,6 +501,19 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         if (trace === undefined) continue;
         const way = fromEntry(entry, trace);
         findings.push(findingFor(entry, way, `${entry.label} loads every row through ${describe(way)}, so each request loads more as the table grows`));
+      }
+      return findings;
+    },
+    massAssignments(file) {
+      const findings: Finding[] = [];
+      for (const entry of entries(file)) {
+        const flow = flowOf(checker, entry.handler, entry.parameters, entry.decoratorsOf);
+        const found = assignmentBy(entry.handler, flow, `${String(idOf(entry.handler))}:entry:${entry.label}`);
+        if (found === undefined || whyChecked(entry) !== undefined) continue;
+        const way = fromEntry(entry, found.trace);
+        findings.push(
+          findingFor(entry, way, `${entry.label} saves what the request sends as it is through ${describe(way)}, so the request can set ${listed(found.fields)}`),
+        );
       }
       return findings;
     },
@@ -691,6 +775,71 @@ function runsHere(node: ts.Expression): boolean {
       ? outer
       : undefined;
   return function_ !== undefined && (ts.getCombinedModifierFlags(function_) & ts.ModifierFlags.Async) !== 0;
+}
+
+/**
+ * Properties a request shouldn't set: ones that grant access, name an owner, or record a check the server makes.
+ */
+const PRIVILEGED = new Set([
+  "role",
+  "roles",
+  "admin",
+  "isAdmin",
+  "superuser",
+  "isSuperuser",
+  "staff",
+  "isStaff",
+  "permissions",
+  "authorities",
+  "userId",
+  "ownerId",
+  "accountId",
+  "organizationId",
+  "orgId",
+  "teamId",
+  "tenantId",
+  "workspaceId",
+  "user",
+  "owner",
+  "tenant",
+  "verified",
+  "isVerified",
+  "emailVerified",
+  "emailVerifiedAt",
+  "confirmedAt",
+  "approved",
+  "isApproved",
+  "approvedAt",
+  "passwordHash",
+]);
+
+/** Names as a message lists them: `role`, `role and isAdmin`, `role, isAdmin and ownerId`. */
+function listed(names: readonly string[]): string {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
+}
+
+/** What a write saves: the argument its spec names, or the properties of it, as Prisma's `data`. */
+function dataOf(call: ts.CallExpression, spec: WriteSpec): ts.Expression[] {
+  const argument = call.arguments[spec.argument];
+  if (argument === undefined) return [];
+  if (spec.property === undefined) return [argument];
+  const options = unwrapped(argument);
+  if (!ts.isObjectLiteralExpression(options)) return [];
+  const pattern = glob(spec.property);
+  return options.properties.flatMap((property) => {
+    if (ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)) && pattern.test(property.name.text)) {
+      return [property.initializer];
+    }
+    return ts.isShorthandPropertyAssignment(property) && pattern.test(property.name.text) ? [property.name] : [];
+  });
+}
+
+function unwrapped(node: ts.Expression): ts.Expression {
+  let expression = node;
+  while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isAwaitExpression(expression)) {
+    expression = expression.expression;
+  }
+  return expression;
 }
 
 /** Whether the arguments of a read, or of the calls in its chain after it, call or tag an aggregate. */
