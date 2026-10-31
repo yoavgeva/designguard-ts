@@ -36,54 +36,84 @@ const STATEMENT_LOOPS: Partial<Record<ts.SyntaxKind, string>> = {
   [ts.SyntaxKind.ForInStatement]: "the for…in loop",
 };
 
-/** The summaries of every function in one of the project's files, the file's top-level code as one more. */
-export function summarize(
+type Owner = FunctionLike | ts.SourceFile;
+type Claims = (fileName: string) => string | undefined;
+
+/** The names of the array, map and set methods that call their callback once per item. */
+const LOOPING_NAMES = new Set(["forEach", "map", "flatMap", "filter", "reduce", "reduceRight", "some", "every", "find", "findIndex", "findLast", "findLastIndex"]);
+
+/** A function's own calls, every one resolved: what the engine follows when a call reaches the function. */
+export function summarizeFunction(program: ts.Program, checker: ts.TypeChecker, owner: Owner, claims: Claims): FunctionSummary {
+  return { node: owner, calls: walk(program, checker, owner, claims, { nested: "skip", resolveAll: true }) };
+}
+
+/**
+ * The calls in a file, in any of its functions, that run once per item of a loop. Only those, and the array-method
+ * calls that might start a loop, are resolved, so linting a file doesn't type-check the code around it.
+ */
+export function loopCalls(program: ts.Program, checker: ts.TypeChecker, file: ts.SourceFile, claims: Claims): CallSite[] {
+  return walk(program, checker, file, claims, { nested: "descend", resolveAll: false }).filter((site) => site.loop !== undefined);
+}
+
+/** Every function in a file with code of its own, the file's top-level code first. */
+export function ownersOf(file: ts.SourceFile): Owner[] {
+  const owners: Owner[] = [file];
+  const visit = (node: ts.Node): void => {
+    if (isFunctionWithBody(node) && !isInlineCallback(node)) owners.push(node);
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(file, visit);
+  return owners;
+}
+
+/**
+ * Walks a function's code, the callbacks written inline in its calls included, recording each call with the loop it
+ * runs in. Other functions inside it are skipped, or, with `nested: "descend"`, walked as code outside any loop.
+ */
+function walk(
   program: ts.Program,
   checker: ts.TypeChecker,
-  file: ts.SourceFile,
-  claims: (fileName: string) => string | undefined,
-): FunctionSummary[] {
-  const summaries: FunctionSummary[] = [];
-
-  const walk = (owner: FunctionLike | ts.SourceFile): void => {
-    const calls: CallSite[] = [];
-    summaries.push({ node: owner, calls });
-    const visit = (node: ts.Node, loop: Loop | undefined): void => {
-      if (node !== owner && isFunctionWithBody(node) && !isInlineCallback(node)) {
-        walk(node);
-        return;
+  owner: Owner,
+  claims: Claims,
+  options: { nested: "skip" | "descend"; resolveAll: boolean },
+): CallSite[] {
+  const calls: CallSite[] = [];
+  const visit = (node: ts.Node, loop: Loop | undefined): void => {
+    if (node !== owner && isFunctionWithBody(node) && !isInlineCallback(node)) {
+      if (options.nested === "descend") visit(node.body, undefined);
+      return;
+    }
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const candidate = ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && LOOPING_NAMES.has(node.expression.name.text);
+      const resolution = options.resolveAll || loop !== undefined || candidate ? resolveCall(program, checker, node, claims) : undefined;
+      if (resolution !== undefined) calls.push({ node, named: node.expression, resolution, loop });
+      visit(node.expression, loop);
+      const perItem = resolution === undefined ? undefined : loopingMethod(node, resolution);
+      for (const argument of node.arguments ?? []) {
+        const inLoop = perItem ?? loop;
+        const passed = options.resolveAll || inLoop !== undefined ? passedFunction(program, checker, argument, claims) : undefined;
+        if (passed !== undefined) calls.push({ node: argument, named: argument, resolution: passed, loop: inLoop });
+        visit(argument, inLoop);
       }
-      if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-        const resolution = resolveCall(program, checker, node, claims);
-        calls.push({ node, named: node.expression, resolution, loop });
-        visit(node.expression, loop);
-        const perItem = loopingMethod(node, resolution);
-        for (const argument of node.arguments ?? []) {
-          const passed = passedFunction(program, checker, argument, claims);
-          if (passed !== undefined) calls.push({ node: argument, named: argument, resolution: passed, loop: perItem ?? loop });
-          visit(argument, perItem ?? loop);
-        }
-        return;
-      }
-      const label = STATEMENT_LOOPS[node.kind];
-      if (label !== undefined && isIterationStatement(node)) {
-        ts.forEachChild(node, (child) => {
-          visit(child, child === node.statement ? { node, label } : loop);
-        });
-        return;
-      }
+      return;
+    }
+    const label = STATEMENT_LOOPS[node.kind];
+    if (label !== undefined && isIterationStatement(node)) {
       ts.forEachChild(node, (child) => {
-        visit(child, loop);
+        visit(child, child === node.statement ? { node, label } : loop);
       });
-    };
-    if (ts.isSourceFile(owner)) ts.forEachChild(owner, (child) => {
+      return;
+    }
+    ts.forEachChild(node, (child) => {
+      visit(child, loop);
+    });
+  };
+  if (ts.isSourceFile(owner)) {
+    ts.forEachChild(owner, (child) => {
       visit(child, undefined);
     });
-    else visit(owner.body, undefined);
-  };
-
-  walk(file);
-  return summaries;
+  } else visit(owner.body, undefined);
+  return calls;
 }
 
 function isIterationStatement(node: ts.Node): node is ts.IterationStatement {

@@ -3,7 +3,7 @@ import ts from "typescript";
 import type { Adapter, EffectKind } from "./adapter.js";
 import { glob } from "./patterns.js";
 import type { FunctionLike } from "./resolve.js";
-import { type CallSite, type FunctionSummary, summarize } from "./summaries.js";
+import { type CallSite, type FunctionSummary, loopCalls, ownersOf, summarizeFunction } from "./summaries.js";
 
 /** A finding, at the node the rule reports. */
 export interface Finding {
@@ -37,51 +37,43 @@ export interface Analysis {
 const cache = new WeakMap<ts.Program, Map<string, Analysis>>();
 
 /**
- * Each file's summaries, by the adapters they were made with. typescript-eslint's project service builds new programs
- * as it opens files, and they share the source files that didn't change, so their summaries are read once.
+ * Summaries and loop calls, by the node they were made for and the adapters they were made with. typescript-eslint's
+ * project service builds new programs as it opens files, and they share the source files that didn't change, so
+ * each is read once.
  */
-const summaryCache = new WeakMap<ts.SourceFile, Map<string, FunctionSummary[]>>();
+const summaryCache = new WeakMap<ts.Node, Map<string, FunctionSummary>>();
+const loopCache = new WeakMap<ts.SourceFile, Map<string, CallSite[]>>();
+
+function cached<K extends object, V>(store: WeakMap<K, Map<string, V>>, node: K, key: string, make: () => V): V {
+  let byKey = store.get(node);
+  if (byKey === undefined) {
+    byKey = new Map();
+    store.set(node, byKey);
+  }
+  let value = byKey.get(key);
+  if (value === undefined) {
+    value = make();
+    byKey.set(key, value);
+  }
+  return value;
+}
 
 /** The analysis of a program with these adapters, built once and shared by every rule and file. */
 export function analyze(program: ts.Program, adapters: readonly Adapter[]): Analysis {
   const key = JSON.stringify(adapters);
-  let byAdapters = cache.get(program);
-  if (byAdapters === undefined) {
-    byAdapters = new Map();
-    cache.set(program, byAdapters);
-  }
-  let analysis = byAdapters.get(key);
-  if (analysis === undefined) {
-    analysis = build(program, adapters);
-    byAdapters.set(key, analysis);
-  }
-  return analysis;
+  return cached(cache, program, key, () => build(program, adapters, key));
 }
 
-function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
+type Owner = FunctionLike | ts.SourceFile;
+
+/**
+ * The analysis reads code only as a question needs it: the loop calls of the file asked about, and the functions
+ * those calls reach.
+ */
+function build(program: ts.Program, adapters: readonly Adapter[], key: string): Analysis {
   const checker = program.getTypeChecker();
   const root = projectRoot(program);
   const claims = claimsOf(adapters);
-  const key = JSON.stringify(adapters);
-  const files = program
-    .getSourceFiles()
-    .filter((file) => !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined);
-  const summaries = new Map<FunctionLike | ts.SourceFile, FunctionSummary>();
-  const byFile = new Map<ts.SourceFile, FunctionSummary[]>();
-  for (const file of files) {
-    let byAdapters = summaryCache.get(file);
-    if (byAdapters === undefined) {
-      byAdapters = new Map();
-      summaryCache.set(file, byAdapters);
-    }
-    let found = byAdapters.get(key);
-    if (found === undefined) {
-      found = summarize(program, checker, file, claims);
-      byAdapters.set(key, found);
-    }
-    byFile.set(file, found);
-    for (const summary of found) summaries.set(summary.node, summary);
-  }
   const matchers = adapters.flatMap((adapter) =>
     (adapter.effects ?? []).map((effect) => ({ packages: adapter.packages, pattern: glob(effect.on), kind: effect.kind })),
   );
@@ -90,7 +82,62 @@ function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
     if (resolution.kind !== "dependency") return undefined;
     return matchers.find((matcher) => matcher.packages.includes(resolution.package) && matcher.pattern.test(resolution.name))?.kind;
   };
-  const effects = propagate([...summaries.values()], summaries, direct);
+  const summaryOf = (owner: Owner): FunctionSummary => cached(summaryCache, owner, key, () => summarizeFunction(program, checker, owner, claims));
+  const isProject = (file: ts.SourceFile): boolean =>
+    !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined;
+
+  /** Effects found for every function a finished question reached: complete, since that set holds all they call. */
+  const final = new Map<Owner, Map<EffectKind, Trace>>();
+
+  const effectsOf = (owner: Owner): Map<EffectKind, Trace> => {
+    const known = final.get(owner);
+    if (known !== undefined) return known;
+    // The functions it reaches that no earlier question did, then their effects to a fixpoint over just those.
+    const reached: Owner[] = [];
+    const seen = new Set<Owner>();
+    const pending: Owner[] = [owner];
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      if (seen.has(next) || final.has(next)) continue;
+      seen.add(next);
+      reached.push(next);
+      for (const site of summaryOf(next).calls) {
+        if (site.resolution.kind !== "project") continue;
+        for (const target of site.resolution.targets) {
+          if (!seen.has(target) && !final.has(target) && isProject(target.getSourceFile())) pending.push(target);
+        }
+      }
+    }
+    const working = new Map<Owner, Map<EffectKind, Trace>>();
+    for (const function_ of reached) {
+      const own = new Map<EffectKind, Trace>();
+      for (const site of summaryOf(function_).calls) {
+        const kind = direct(site);
+        if (kind !== undefined && !own.has(kind)) own.set(kind, { site, next: undefined });
+      }
+      working.set(function_, own);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const function_ of reached) {
+        const own = working.get(function_);
+        if (own === undefined) continue;
+        for (const site of summaryOf(function_).calls) {
+          if (site.resolution.kind !== "project") continue;
+          for (const target of site.resolution.targets) {
+            for (const [kind, trace] of working.get(target) ?? final.get(target) ?? []) {
+              if (!own.has(kind)) {
+                own.set(kind, { site, next: trace });
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    for (const [function_, effects] of working) final.set(function_, effects);
+    return final.get(owner) ?? new Map();
+  };
 
   /** The effects a call has: its own, or those of the project functions it reaches, with the way there. */
   const effectsOfCall = (site: CallSite): Map<EffectKind, Trace> => {
@@ -99,7 +146,8 @@ function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
     if (own !== undefined) found.set(own, { site, next: undefined });
     if (site.resolution.kind === "project") {
       for (const target of site.resolution.targets) {
-        for (const [kind, trace] of effects.get(target) ?? []) {
+        if (!isProject(target.getSourceFile())) continue;
+        for (const [kind, trace] of effectsOf(target)) {
           if (!found.has(kind)) found.set(kind, { site, next: trace });
         }
       }
@@ -120,31 +168,30 @@ function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
   return {
     queriesInLoops(file) {
       const findings: Finding[] = [];
-      for (const summary of byFile.get(file) ?? []) {
-        for (const site of summary.calls) {
-          if (site.loop === undefined) continue;
-          const found = effectsOfCall(site);
-          const trace = found.get("db.read") ?? found.get("db.write");
-          if (trace !== undefined) {
-            findings.push({ node: site.node, message: `queries the database once per item: ${site.loop.label} calls ${describe(trace)}` });
-          }
+      for (const site of cached(loopCache, file, key, () => loopCalls(program, checker, file, claims))) {
+        const found = effectsOfCall(site);
+        const trace = found.get("db.read") ?? found.get("db.write");
+        if (trace !== undefined && site.loop !== undefined) {
+          findings.push({ node: site.node, message: `queries the database once per item: ${site.loop.label} calls ${describe(trace)}` });
         }
       }
       return findings;
     },
     stats() {
-      const stats: ResolutionStats = { files: files.length, functions: summaries.size, calls: 0, project: 0, dependency: 0, lib: 0, unresolvedAny: 0, unresolvedAbstract: 0 };
-      const seen = new Set<ts.Node>();
-      for (const summary of summaries.values()) {
-        for (const site of summary.calls) {
-          if (seen.has(site.node)) continue;
-          seen.add(site.node);
-          stats.calls++;
-          const resolution = site.resolution;
-          if (resolution.kind === "unresolved") {
-            if (resolution.reason === "any") stats.unresolvedAny++;
-            else stats.unresolvedAbstract++;
-          } else stats[resolution.kind]++;
+      const files = program.getSourceFiles().filter(isProject);
+      const stats: ResolutionStats = { files: files.length, functions: 0, calls: 0, project: 0, dependency: 0, lib: 0, unresolvedAny: 0, unresolvedAbstract: 0 };
+      for (const file of files) {
+        for (const owner of ownersOf(file)) {
+          stats.functions++;
+          for (const site of summaryOf(owner).calls) {
+            if (site.node === site.named) continue; // a function passed by name, not a call
+            stats.calls++;
+            const resolution = site.resolution;
+            if (resolution.kind === "unresolved") {
+              if (resolution.reason === "any") stats.unresolvedAny++;
+              else stats.unresolvedAbstract++;
+            } else stats[resolution.kind]++;
+          }
         }
       }
       return stats;
@@ -161,44 +208,6 @@ function claimsOf(adapters: readonly Adapter[]): (fileName: string) => string | 
     (adapter.files ?? []).map((pattern) => ({ pattern: glob(pattern), package: adapter.packages[0] ?? adapter.name })),
   );
   return (fileName) => claimed.find((claim) => claim.pattern.test(fileName))?.package;
-}
-
-/** Each function's effects, reached through the project functions it calls, found by iterating to a fixpoint. */
-function propagate(
-  all: readonly FunctionSummary[],
-  summaries: ReadonlyMap<FunctionLike | ts.SourceFile, FunctionSummary>,
-  direct: (site: CallSite) => EffectKind | undefined,
-): Map<FunctionLike | ts.SourceFile, Map<EffectKind, Trace>> {
-  const effects = new Map<FunctionLike | ts.SourceFile, Map<EffectKind, Trace>>();
-  for (const summary of all) {
-    const own = new Map<EffectKind, Trace>();
-    for (const site of summary.calls) {
-      const kind = direct(site);
-      if (kind !== undefined && !own.has(kind)) own.set(kind, { site, next: undefined });
-    }
-    effects.set(summary.node, own);
-  }
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const summary of all) {
-      const own = effects.get(summary.node);
-      if (own === undefined) continue;
-      for (const site of summary.calls) {
-        if (site.resolution.kind !== "project") continue;
-        for (const target of site.resolution.targets) {
-          if (!summaries.has(target)) continue;
-          for (const [kind, trace] of effects.get(target) ?? []) {
-            if (!own.has(kind)) {
-              own.set(kind, { site, next: trace });
-              changed = true;
-            }
-          }
-        }
-      }
-    }
-  }
-  return effects;
 }
 
 /**
