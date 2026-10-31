@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { resolveCall } from "../src/resolve.js";
-import { prismaStub, project } from "./fixture.js";
+import { prismaStub, project, stubPackage } from "./fixture.js";
 
 /** Every call in `src/main.ts`, by its callee's text, resolved. */
 function resolutions(files: Record<string, string>) {
@@ -83,6 +83,32 @@ describe("resolveCall", () => {
       "prisma.user.findMany": { kind: "dependency", package: "@prisma/client", name: "Prisma.UserDelegate.findMany" },
       "[1, 2].map": { kind: "lib", },
       "untyped.load": { kind: "unresolved" },
+    });
+  });
+
+  it("names a call through a property or variable of a function type by the property or variable", () => {
+    expect(
+      resolutions({
+        ...stubPackage(
+          "router",
+          "1.0.0",
+          `export interface RouterMatcher { (path: string, ...handlers: ((request: unknown) => void)[]): void }
+           export interface Router { post: RouterMatcher; get: (path: string) => void }
+           export declare const Post: (path?: string) => MethodDecorator;
+           export declare function router(): Router;`,
+        ),
+        "src/main.ts": `
+          import { router, Post } from "router";
+          const app = router();
+          app.post("/orders", () => {});
+          app.get("/orders");
+          Post("/orders");`,
+      }),
+    ).toEqual({
+      router: { kind: "dependency", package: "router", name: "router" },
+      "app.post": { kind: "dependency", package: "router", name: "Router.post" },
+      "app.get": { kind: "dependency", package: "router", name: "Router.get" },
+      Post: { kind: "dependency", package: "router", name: "Post" },
     });
   });
 });

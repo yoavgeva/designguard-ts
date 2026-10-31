@@ -34,13 +34,13 @@ export function resolveCall(
   const declaration = declarationOf(checker, call);
   if (declaration === undefined) return { kind: "unresolved", reason: "any" };
   const file = declaration.getSourceFile();
-  if (program.isSourceFileDefaultLibrary(file)) {
-    return { kind: "lib", name: qualifiedName(checker, declaration), declaration };
-  }
+  // A signature with no name of its own, as a property of a function type has, goes by the property's.
+  const name = (): string => qualifiedName(checker, declaration) || calleeName(checker, call);
+  if (program.isSourceFileDefaultLibrary(file)) return { kind: "lib", name: name(), declaration };
   const claimed = claims(file.fileName);
-  if (claimed !== undefined) return { kind: "dependency", package: claimed, name: qualifiedName(checker, declaration), declaration };
+  if (claimed !== undefined) return { kind: "dependency", package: claimed, name: name(), declaration };
   if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file)) {
-    return { kind: "dependency", package: packageOf(file.fileName), name: qualifiedName(checker, declaration), declaration };
+    return { kind: "dependency", package: packageOf(file.fileName), name: name(), declaration };
   }
   const targets = implementations(program, checker, declaration);
   return targets.length > 0 ? { kind: "project", targets } : { kind: "unresolved", reason: "abstract" };
@@ -54,6 +54,13 @@ function declarationOf(checker: ts.TypeChecker, call: ts.CallLikeExpression): ts
   const symbol = callee === undefined ? undefined : symbolOf(checker, callee);
   const held = symbol === undefined ? undefined : heldFunction(symbol);
   return held ?? fromSignature;
+}
+
+/** The qualified name of the property or variable a call's callee reads, as `Router.post` for `app.post(...)`. */
+function calleeName(checker: ts.TypeChecker, call: ts.CallLikeExpression): string {
+  const callee = ts.isCallExpression(call) || ts.isNewExpression(call) ? call.expression : undefined;
+  const symbol = callee === undefined ? undefined : symbolOf(checker, callee);
+  return symbol === undefined ? "" : nameOfSymbol(checker, symbol);
 }
 
 function symbolOf(checker: ts.TypeChecker, callee: ts.Expression): ts.Symbol | undefined {
@@ -150,7 +157,10 @@ function heritageIndex(program: ts.Program, checker: ts.TypeChecker): Map<ts.Sym
 export function qualifiedName(checker: ts.TypeChecker, declaration: ts.Declaration): string {
   const name = ts.getNameOfDeclaration(declaration);
   const symbol = name === undefined ? undefined : checker.getSymbolAtLocation(name);
-  if (symbol === undefined) return "";
+  return symbol === undefined ? "" : nameOfSymbol(checker, symbol);
+}
+
+function nameOfSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): string {
   return checker
     .getFullyQualifiedName(symbol)
     .replace(/^"[^"]*\/[^"]*"\./, "")
