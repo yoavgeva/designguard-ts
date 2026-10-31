@@ -1,15 +1,19 @@
 import ts from "typescript";
+import { callee } from "./names.js";
 import { type FunctionLike, type Resolution, resolveCall } from "./resolve.js";
 
 /**
- * A loop a call runs once per item of: a `for`, `for…of` or `for…in` loop, or the callback of an array method such as
- * `map()`. A `while` loop polls or retries rather than walking items, so it isn't one.
+ * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
+ * loop, or the callback of an array method such as `map()`; a `while` loop polls or retries rather than walking
+ * items, so it isn't one. A transaction is the function an adapter's transaction call runs.
  */
-export interface Loop {
+export interface Scope {
   readonly node: ts.Node;
-  /** How a message names it: `the for…of loop`, `map()`. */
+  /** How a message names it: `the for…of loop`, `map()`, `prisma.$transaction()`. */
   readonly label: string;
 }
+
+
 
 export interface CallSite {
   /** The function the call is in, or the file for top-level code. */
@@ -20,7 +24,17 @@ export interface CallSite {
   readonly named: ts.Expression;
   readonly resolution: Resolution;
   /** The innermost loop the call runs once per item of, if any. */
-  readonly loop: Loop | undefined;
+  readonly loop: Scope | undefined;
+  /** The innermost transaction the call runs in, if any. */
+  readonly transaction: Scope | undefined;
+}
+
+/** What the walker needs to know of the adapters: which calls run a transaction, and the names those calls have. */
+export interface Transactions {
+  /** The argument of a call that runs inside the transaction it opens, if it opens one. */
+  bodyOf(resolution: Resolution): number | undefined;
+  /** Whether a callee's last name could be a transaction call, so a file's walk resolves it. */
+  mightBe(name: string): boolean;
 }
 
 /** A function's own calls, those of the callbacks written inline in its calls included. */
@@ -45,16 +59,30 @@ type Claims = (fileName: string) => string | undefined;
 const LOOPING_NAMES = new Set(["forEach", "map", "flatMap", "filter", "reduce", "reduceRight", "some", "every", "find", "findIndex", "findLast", "findLastIndex"]);
 
 /** A function's own calls, every one resolved: what the engine follows when a call reaches the function. */
-export function summarizeFunction(program: ts.Program, checker: ts.TypeChecker, owner: Owner, claims: Claims): FunctionSummary {
-  return { node: owner, calls: walk(program, checker, owner, claims, { nested: "skip", resolveAll: true }) };
+export function summarizeFunction(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  owner: Owner,
+  claims: Claims,
+  transactions: Transactions,
+): FunctionSummary {
+  return { node: owner, calls: walk(program, checker, owner, claims, transactions, { nested: "skip", resolveAll: true }) };
 }
 
 /**
- * The calls in a file, in any of its functions, that run once per item of a loop. Only those, and the array-method
- * calls that might start a loop, are resolved, so linting a file doesn't type-check the code around it.
+ * The calls in a file, in any of its functions, that run in a loop or a transaction. Only those, and the calls that
+ * might start one, are resolved, so linting a file doesn't type-check the code around it.
  */
-export function loopCalls(program: ts.Program, checker: ts.TypeChecker, file: ts.SourceFile, claims: Claims): CallSite[] {
-  return walk(program, checker, file, claims, { nested: "descend", resolveAll: false }).filter((site) => site.loop !== undefined);
+export function scopedCalls(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  file: ts.SourceFile,
+  claims: Claims,
+  transactions: Transactions,
+): CallSite[] {
+  return walk(program, checker, file, claims, transactions, { nested: "descend", resolveAll: false }).filter(
+    (site) => site.loop !== undefined || site.transaction !== undefined,
+  );
 }
 
 /**
@@ -104,51 +132,68 @@ function walk(
   checker: ts.TypeChecker,
   owner: Owner,
   claims: Claims,
+  transactions: Transactions,
   options: { nested: "skip" | "descend"; resolveAll: boolean },
 ): CallSite[] {
   const calls: CallSite[] = [];
   let current: Owner = owner;
-  const visit = (node: ts.Node, loop: Loop | undefined): void => {
+  const visit = (node: ts.Node, loop: Scope | undefined, transaction: Scope | undefined): void => {
     if (node !== owner && isFunctionWithBody(node) && !isInlineCallback(node)) {
       if (options.nested === "descend") {
         const outer = current;
         current = node;
-        visit(node.body, undefined);
+        visit(node.body, undefined, undefined);
         current = outer;
       }
       return;
     }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-      const candidate = ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && LOOPING_NAMES.has(node.expression.name.text);
-      const resolution = options.resolveAll || loop !== undefined || candidate ? resolveCall(program, checker, node, claims) : undefined;
-      if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop });
-      visit(node.expression, loop);
+      const name = lastName(node.expression);
+      const candidate = name !== undefined && (LOOPING_NAMES.has(name) || transactions.mightBe(name));
+      const scoped = loop !== undefined || transaction !== undefined;
+      const resolution = options.resolveAll || scoped || candidate ? resolveCall(program, checker, node, claims) : undefined;
+      if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop, transaction });
+      visit(node.expression, loop, transaction);
       const perItem = resolution === undefined ? undefined : loopingMethod(node, resolution);
-      for (const argument of node.arguments ?? []) {
+      const body = resolution === undefined ? undefined : transactions.bodyOf(resolution);
+      const opened = body === undefined ? undefined : { node, label: `${callee(node.expression)}()` };
+      (node.arguments ?? []).forEach((argument, index) => {
         const inLoop = perItem ?? loop;
-        const passed = options.resolveAll || inLoop !== undefined ? passedFunction(program, checker, argument, claims) : undefined;
-        if (passed !== undefined) calls.push({ owner: current, node: argument, named: argument, resolution: passed, loop: inLoop });
-        visit(argument, inLoop);
-      }
+        const inTransaction = index === body ? opened : transaction;
+        const passed =
+          options.resolveAll || inLoop !== undefined || inTransaction !== undefined
+            ? passedFunction(program, checker, argument, claims)
+            : undefined;
+        if (passed !== undefined) {
+          calls.push({ owner: current, node: argument, named: argument, resolution: passed, loop: inLoop, transaction: inTransaction });
+        }
+        visit(argument, inLoop, inTransaction);
+      });
       return;
     }
     const label = STATEMENT_LOOPS[node.kind];
     if (label !== undefined && isIterationStatement(node)) {
       ts.forEachChild(node, (child) => {
-        visit(child, child === node.statement ? { node, label } : loop);
+        visit(child, child === node.statement ? { node, label } : loop, transaction);
       });
       return;
     }
     ts.forEachChild(node, (child) => {
-      visit(child, loop);
+      visit(child, loop, transaction);
     });
   };
   if (ts.isSourceFile(owner)) {
     ts.forEachChild(owner, (child) => {
-      visit(child, undefined);
+      visit(child, undefined, undefined);
     });
-  } else visit(owner.body, undefined);
+  } else visit(owner.body, undefined, undefined);
   return calls;
+}
+
+/** The last name of a callee: `map` for `ids.map`, `load` for `load`. */
+function lastName(callee: ts.Expression): string | undefined {
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  return ts.isIdentifier(callee) ? callee.text : undefined;
 }
 
 function isIterationStatement(node: ts.Node): node is ts.IterationStatement {
@@ -170,7 +215,7 @@ function isInlineCallback(node: FunctionLike): boolean {
 }
 
 /** The loop of a call to an array method that calls its callback once per item, such as `ids.map(...)`. */
-function loopingMethod(call: ts.CallLikeExpression, resolution: Resolution): Loop | undefined {
+function loopingMethod(call: ts.CallLikeExpression, resolution: Resolution): Scope | undefined {
   if (resolution.kind !== "lib" || !LOOPING.test(resolution.name) || !ts.isCallExpression(call)) return undefined;
   const name = ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : resolution.name;
   return { node: call, label: `${name}()` };

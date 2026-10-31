@@ -3,7 +3,9 @@ import ts from "typescript";
 import type { Adapter, EffectKind } from "./adapter.js";
 import { glob } from "./patterns.js";
 import type { FunctionLike } from "./resolve.js";
-import { type CallSite, type FunctionSummary, loopCalls, nameOf, ownersOf, summarizeFunction } from "./summaries.js";
+import { callee } from "./names.js";
+import { standards } from "./standards.js";
+import { type CallSite, type FunctionSummary, nameOf, ownersOf, scopedCalls, summarizeFunction, type Transactions } from "./summaries.js";
 
 /** A function in the project, by its file's absolute path and its name, as `nameOf` gives it. */
 export interface Place {
@@ -26,6 +28,8 @@ export interface AnalysisOptions {
   readonly adapters: readonly Adapter[];
   /** The directory message paths are relative to: the tsconfig's, unless given. */
   readonly root?: string;
+  /** Whether the platform's own effects (`fetch`, Node's modules) count. They do unless this is `false`. */
+  readonly standards?: boolean;
 }
 
 /** How a function reaches an effect: the call in it that leads there, and the rest of the way from that call. */
@@ -48,6 +52,7 @@ export interface ResolutionStats {
 
 export interface Analysis {
   queriesInLoops(file: ts.SourceFile): Finding[];
+  ioInTransactions(file: ts.SourceFile): Finding[];
   stats(): ResolutionStats;
 }
 
@@ -59,7 +64,7 @@ const cache = new WeakMap<ts.Program, Map<string, Analysis>>();
  * each is read once.
  */
 const summaryCache = new WeakMap<ts.Node, Map<string, FunctionSummary>>();
-const loopCache = new WeakMap<ts.SourceFile, Map<string, CallSite[]>>();
+const scopedCache = new WeakMap<ts.SourceFile, Map<string, CallSite[]>>();
 
 function cached<K extends object, V>(store: WeakMap<K, Map<string, V>>, node: K, key: string, make: () => V): V {
   let byKey = store.get(node);
@@ -76,7 +81,9 @@ function cached<K extends object, V>(store: WeakMap<K, Map<string, V>>, node: K,
 }
 
 /** The analysis of a program with these options, built once and shared by every rule and file. */
-export function analyze(program: ts.Program, { adapters, root }: AnalysisOptions): Analysis {
+export function analyze(program: ts.Program, options: AnalysisOptions): Analysis {
+  const adapters = options.standards === false ? options.adapters : [standards, ...options.adapters];
+  const root = options.root;
   const key = JSON.stringify(adapters);
   return cached(cache, program, `${key}\0${root ?? ""}`, () => build(program, adapters, key, root ?? projectRoot(program)));
 }
@@ -94,11 +101,24 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string, r
     (adapter.effects ?? []).map((effect) => ({ packages: adapter.packages, pattern: glob(effect.on), kind: effect.kind })),
   );
   const direct = (site: CallSite): EffectKind | undefined => {
-    const resolution = site.resolution;
-    if (resolution.kind !== "dependency") return undefined;
-    return matchers.find((matcher) => matcher.packages.includes(resolution.package) && matcher.pattern.test(resolution.name))?.kind;
+    const target = packaged(site.resolution);
+    return target === undefined ? undefined : matchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name))?.kind;
   };
-  const summaryOf = (owner: Owner): FunctionSummary => cached(summaryCache, owner, key, () => summarizeFunction(program, checker, owner, claims));
+  const transactionMatchers = adapters.flatMap((adapter) =>
+    (adapter.transactions ?? []).map((spec) => ({ packages: adapter.packages, pattern: glob(spec.on), body: spec.body, on: spec.on })),
+  );
+  const transactionNames = transactionMatchers.map((matcher) => lastNamePattern(matcher.on));
+  const transactions: Transactions = {
+    bodyOf(resolution) {
+      const target = packaged(resolution);
+      if (target === undefined) return undefined;
+      return transactionMatchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name))?.body;
+    },
+    mightBe: (name) => transactionNames.some((pattern) => pattern.test(name)),
+  };
+  const summaryOf = (owner: Owner): FunctionSummary =>
+    cached(summaryCache, owner, key, () => summarizeFunction(program, checker, owner, claims, transactions));
+  const scoped = (file: ts.SourceFile): CallSite[] => cached(scopedCache, file, key, () => scopedCalls(program, checker, file, claims, transactions));
   const isProject = (file: ts.SourceFile): boolean =>
     !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined;
 
@@ -172,25 +192,46 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string, r
   };
 
   const describe = (trace: Trace): string => {
-    const first = `${callee(trace.site)}()`;
+    const first = `${callee(trace.site.named)}()`;
     let last = trace;
     while (last.next !== undefined) last = last.next;
     if (last === trace) return first;
     const file = last.site.node.getSourceFile();
     const line = file.getLineAndCharacterOfPosition(last.site.node.getStart()).line + 1;
-    return `${first}, which reaches ${callee(last.site)}() (${relative(root, file.fileName)}:${line})`;
+    return `${first}, which reaches ${callee(last.site.named)}() (${relative(root, file.fileName)}:${line})`;
   };
 
   return {
     queriesInLoops(file) {
       const findings: Finding[] = [];
-      for (const site of cached(loopCache, file, key, () => loopCalls(program, checker, file, claims))) {
+      for (const site of scoped(file)) {
+        if (site.loop === undefined) continue;
         const found = effectsOfCall(site);
         const trace = found.get("db.read") ?? found.get("db.write");
         if (trace !== undefined && site.loop !== undefined) {
           findings.push({
             node: site.node,
             message: `queries the database once per item: ${site.loop.label} calls ${describe(trace)}`,
+            at: placeOf(site.owner),
+            reaching: reachingOf(trace),
+          });
+        }
+      }
+      return findings;
+    },
+    ioInTransactions(file) {
+      const findings: Finding[] = [];
+      for (const site of scoped(file)) {
+        if (site.transaction === undefined) continue;
+        const found = effectsOfCall(site);
+        const io = OUTSIDE.find((kind) => found.has(kind.kind));
+        const trace = io === undefined ? undefined : found.get(io.kind);
+        if (io !== undefined && trace !== undefined) {
+          findings.push({
+            node: site.node,
+            message:
+              `${io.verb} inside ${site.transaction.label} through ${describe(trace)}: the transaction holds its database ` +
+              `connection while it waits, and a rollback can't undo ${io.undone}`,
             at: placeOf(site.owner),
             reaching: reachingOf(trace),
           });
@@ -220,6 +261,29 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string, r
   };
 }
 
+/** What a transaction shouldn't wait on, in the order a message names them: work outside the database. */
+const OUTSIDE: readonly { kind: EffectKind; verb: string; undone: string }[] = [
+  { kind: "network", verb: "makes an HTTP request", undone: "the request" },
+  { kind: "mail", verb: "sends mail", undone: "the mail" },
+  { kind: "publish", verb: "publishes a message", undone: "the message" },
+];
+
+/**
+ * A resolved call as a package and qualified name, for adapter patterns: a dependency's, or TypeScript's own library
+ * as the `typescript` package.
+ */
+function packaged(resolution: CallSite["resolution"]): { package: string; name: string } | undefined {
+  if (resolution.kind === "dependency") return resolution;
+  if (resolution.kind === "lib") return { package: "typescript", name: resolution.name };
+  return undefined;
+}
+
+/** The names a pattern's last segment matches, as `$transaction` for `PrismaClient.$transaction`. */
+function lastNamePattern(on: string): RegExp {
+  const dot = on.lastIndexOf(".");
+  return glob(dot < 0 ? on : on.slice(dot + 1));
+}
+
 function placeOf(owner: Owner): Place {
   return { file: owner.getSourceFile().fileName, symbol: nameOf(owner) };
 }
@@ -243,32 +307,6 @@ function claimsOf(adapters: readonly Adapter[]): (fileName: string) => string | 
     (adapter.files ?? []).map((pattern) => ({ pattern: glob(pattern), package: adapter.packages[0] ?? adapter.name })),
   );
   return (fileName) => claimed.find((claim) => claim.pattern.test(fileName))?.package;
-}
-
-/**
- * The text a message names a call by, on one line: `prisma.user.findUnique`, or for a chain of calls, where it starts
- * and the call that ends it, as `db.selectFrom(…).execute`.
- */
-function callee(site: CallSite): string {
-  const named = site.named;
-  let first: ts.Expression | undefined;
-  for (let node: ts.Expression = named; ; ) {
-    if (ts.isCallExpression(node) || ts.isTaggedTemplateExpression(node)) first = node;
-    if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
-    else if (ts.isTaggedTemplateExpression(node)) node = node.tag;
-    else break;
-  }
-  const text =
-    first === undefined || !ts.isPropertyAccessExpression(named)
-      ? oneLine(named.getText())
-      : ts.isTaggedTemplateExpression(first)
-        ? `${oneLine(first.tag.getText())}\`…\`.${named.name.text}`
-        : `${oneLine((first as ts.CallExpression).expression.getText())}(…).${named.name.text}`;
-  return text.length > 60 ? `${text.slice(0, 57)}...` : text;
-}
-
-function oneLine(text: string): string {
-  return text.replace(/\s+/g, "");
 }
 
 /** The directory of the program's tsconfig, which message paths are relative to. */

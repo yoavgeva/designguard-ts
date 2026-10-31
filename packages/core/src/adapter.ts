@@ -19,6 +19,15 @@ export interface EffectSpec {
 }
 
 /**
+ * A call that runs a function inside a database transaction, as `{ on: "PrismaClient.$transaction", body: 0 }`: the
+ * argument at `body` runs inside it.
+ */
+export interface TransactionSpec {
+  readonly on: string;
+  readonly body: number;
+}
+
+/**
  * What designguard knows about a library: data, so ESLint can cache and print the configuration that holds it.
  * `packages` are the npm packages whose declarations the patterns match.
  */
@@ -31,6 +40,7 @@ export interface Adapter {
    */
   readonly files?: readonly string[];
   readonly effects?: readonly EffectSpec[];
+  readonly transactions?: readonly TransactionSpec[];
 }
 
 export function defineAdapter<const A extends Adapter>(adapter: A): A {
