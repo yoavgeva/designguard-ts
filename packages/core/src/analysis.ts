@@ -6,11 +6,11 @@ import type { Adapter, EffectKind, EntryPointSpec } from "./adapter.js";
 import { glob } from "./patterns.js";
 import { type FunctionLike, resolveCall } from "./resolve.js";
 import { callee } from "./names.js";
-import { type EntryPoint, entriesOf, type EntrySpecs } from "./entries.js";
+import { type EntryPoint, entriesOf, type EntrySpecs, type Middleware } from "./entries.js";
 import { flowOf } from "./flow.js";
 import { standards } from "./standards.js";
 import { type CallSite, type FunctionSummary, nameOf, ownersOf, scopedCalls, summarizeFunction, type Transactions } from "./summaries.js";
-import { isCheckName, isUserCall } from "./words.js";
+import { isCheckName, isRequirementName, isUserCall } from "./words.js";
 
 /** A function in the project, by its file's absolute path and its name, as `nameOf` gives it. */
 export interface Place {
@@ -42,6 +42,15 @@ export interface Role {
   readonly transaction?: number;
   /** Why no adapter applies: the adapter for the package is off for the installed version. */
   readonly off?: string;
+}
+
+/** A request handler the adapters find: where it is, how messages name it, and what runs before it. */
+export interface EntryPointRole {
+  readonly node: ts.Node;
+  readonly label: string;
+  readonly reads: boolean;
+  /** The names of the middleware that runs before it, "" for one written inline. */
+  readonly middleware: readonly string[];
 }
 
 export interface AnalysisOptions {
@@ -82,6 +91,8 @@ export interface Analysis {
   unknownIo(file: ts.SourceFile): Finding[];
   /** What the adapters make of each call a file makes into a package, in the order the calls start. */
   roles(file: ts.SourceFile): Role[];
+  /** The request handlers a file registers or declares, as the adapters find them. */
+  entryPoints(file: ts.SourceFile): EntryPointRole[];
   stats(): ResolutionStats;
 }
 
@@ -134,7 +145,9 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
   const adapters = configured.filter((adapter) => {
     if (adapter.versions === undefined) return true;
     const installed = adapter.packages.map((name) => versionOf(name)).find((version) => version !== undefined);
-    if (installed === undefined || semver.satisfies(installed, adapter.versions, { includePrerelease: true })) return true;
+    // A package typed by @types has its types' version, whose major and minor follow the package's.
+    const version = installed?.replace(/ \(types\)$/, "");
+    if (version === undefined || semver.satisfies(version, adapter.versions, { includePrerelease: true })) return true;
     for (const name of adapter.packages) inactive.set(name, { adapter, range: adapter.versions });
     return false;
   });
@@ -287,8 +300,13 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       const found = effectsOfCall(site);
       if (found.has("user") || found.has("check")) return true;
     }
-    if (entry.middleware.some((function_) => isCheckName(nameOf(function_)) || effectsOf(function_).has("check"))) return true;
+    const checking = (middleware: Middleware): boolean =>
+      isCheckName(middleware.name) ||
+      (middleware.function !== undefined && (isCheckName(nameOf(middleware.function)) || effectsOf(middleware.function).has("check")));
+    if (entry.middleware.some(checking)) return true;
     return entry.decorators.some((call) => {
+      const name = lastName(call.expression);
+      if (name !== undefined && isRequirementName(name)) return true;
       const site: CallSite = { owner: entry.handler, node: call, named: call.expression, resolution: resolveCall(program, checker, call, claims), loop: undefined, transaction: undefined };
       return effectsOfCall(site).has("check");
     });
@@ -441,6 +459,14 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         });
       }
       return findings;
+    },
+    entryPoints(file) {
+      return entries(file).map((entry) => ({
+        node: entry.at ?? entry.handler,
+        label: entry.label,
+        reads: entry.reads,
+        middleware: entry.middleware.map((middleware) => middleware.name),
+      }));
     },
     roles(file) {
       const roles: Role[] = [];

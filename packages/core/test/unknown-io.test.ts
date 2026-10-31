@@ -55,6 +55,12 @@ describe("unknownIo", () => {
     expect(analyze(program, { adapters: [] }).unknownIo(main).map((finding) => finding.message)).toEqual([
       "calls lock.acquire(), from async-lock 1.4.2 (types), which no adapter describes, so designguard can't tell what it does",
     ]);
+    // Its types' version decides whether an adapter for it applies.
+    const adapter = (versions: string) => defineAdapter({ name: "async-lock", packages: ["async-lock"], versions, effects: [] });
+    expect(analyze(program, { adapters: [adapter(">=1 <2")] }).unknownIo(main)).toEqual([]);
+    expect(analyze(program, { adapters: [adapter(">=2")] }).unknownIo(main).map((finding) => finding.message)).toEqual([
+      "calls lock.acquire(), from async-lock 1.4.2 (types), which the async-lock adapter doesn't describe: it describes >=2",
+    ]);
   });
 
   it("says when an adapter doesn't describe the installed version", () => {

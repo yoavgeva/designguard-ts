@@ -68,3 +68,12 @@ export function isCheckName(name: string): boolean {
   if (words.some((word) => CHECKING.has(word))) return true;
   return ASKS.has(words[0] ?? "") && words.slice(1).some((word) => CHECKED.has(word));
 }
+
+/**
+ * Whether a decorator by this name states who may call what it's on, as `@Roles("admin")`, `@Permissions(...)` and
+ * `@Public()` do: a guard reads what it records.
+ */
+export function isRequirementName(name: string): boolean {
+  const words = wordsOf(name);
+  return isCheckName(name) || words.some((word) => CHECKED.has(word) || word === "public" || word === "authenticated");
+}

@@ -18,10 +18,18 @@ export interface EntryPoint {
   /** What its parameters hold, with the decorators of each, by position, to match the specs' `decorator`. */
   readonly parameters: readonly ParameterSpec[];
   readonly decoratorsOf: (parameter: number) => readonly string[];
-  /** Functions that run before it, as middleware does. */
-  readonly middleware: readonly FunctionLike[];
+  /**
+   * What runs before it, as middleware does: by the name it's given, as `isAdmin` in `use(isAdmin)`, and its function
+   * when the project writes one, inline, by name, or wrapped, as `t.middleware(fn)` wraps one.
+   */
+  readonly middleware: readonly Middleware[];
   /** The decorator calls on it and on its class, which may check permissions. */
   readonly decorators: readonly ts.CallExpression[];
+}
+
+export interface Middleware {
+  readonly name: string;
+  readonly function: FunctionLike | undefined;
 }
 
 /** What finding entry points needs of the adapters. */
@@ -111,10 +119,7 @@ function registered(
   const argument = call.arguments[index];
   const handler = argument === undefined ? undefined : functionOf(program, checker, argument, claims);
   if (argument === undefined || handler === undefined) return undefined;
-  const middleware = call.arguments.slice(0, index).flatMap((before) => {
-    const function_ = functionOf(program, checker, before, claims);
-    return function_ === undefined ? [] : [function_];
-  });
+  const middleware = call.arguments.slice(0, index).flatMap((before) => middlewareOf(program, checker, before, claims));
   if (spec.middleware !== undefined) middleware.push(...chainMiddleware(program, checker, call, spec, specs, resolve, claims));
   return {
     handler,
@@ -140,18 +145,15 @@ function chainMiddleware(
   specs: EntrySpecs,
   resolve: (call: ts.CallExpression) => Resolution,
   claims: Claims,
-): FunctionLike[] {
-  const found: FunctionLike[] = [];
+): Middleware[] {
+  const found: Middleware[] = [];
   const seen = new Set<ts.Node>();
   let node: ts.Expression | undefined = ts.isPropertyAccessExpression(call.expression) ? call.expression.expression : undefined;
   while (node !== undefined && !seen.has(node)) {
     seen.add(node);
     if (ts.isCallExpression(node)) {
       if (specs.matches(spec, spec.middleware ?? "", resolve(node))) {
-        for (const argument of node.arguments) {
-          const function_ = functionOf(program, checker, argument, claims);
-          if (function_ !== undefined) found.push(function_);
-        }
+        for (const argument of node.arguments) found.push(...middlewareOf(program, checker, argument, claims));
       }
       node = ts.isPropertyAccessExpression(node.expression) ? node.expression.expression : undefined;
     } else if (ts.isPropertyAccessExpression(node)) node = node.expression;
@@ -180,20 +182,31 @@ function labelOf(call: ts.CallExpression, resolution: Resolution): string {
   return `the ${method}() handler`;
 }
 
-/** The project function an argument is or names: written inline, or a function or method it refers to. */
+/** The middleware an argument gives: a function, or a name for one. */
+function middlewareOf(program: ts.Program, checker: ts.TypeChecker, argument: ts.Expression, claims: Claims): Middleware[] {
+  const function_ = functionOf(program, checker, argument, claims);
+  const name = ts.isIdentifier(argument) ? argument.text : ts.isPropertyAccessExpression(argument) ? argument.name.text : "";
+  return function_ === undefined && name === "" ? [] : [{ name, function: function_ }];
+}
+
+/**
+ * The project function an argument is or names: written inline, a function or method it refers to, or the function
+ * a variable it refers to wraps, as `const isAdmin = t.middleware(async (opts) => ...)` does.
+ */
 function functionOf(program: ts.Program, checker: ts.TypeChecker, argument: ts.Expression, claims: Claims): FunctionLike | undefined {
   if (isFunctionWithBody(argument)) return argument;
   if (!ts.isIdentifier(argument) && !ts.isPropertyAccessExpression(argument)) return undefined;
   const symbol = aliased(checker, checker.getSymbolAtLocation(ts.isPropertyAccessExpression(argument) ? argument.name : argument));
   const declaration = symbol?.valueDeclaration;
   if (declaration === undefined) return undefined;
+  const initializer =
+    ts.isVariableDeclaration(declaration) || ts.isPropertyDeclaration(declaration) || ts.isPropertyAssignment(declaration) ? declaration.initializer : undefined;
+  const wrapped = initializer !== undefined && ts.isCallExpression(initializer) ? initializer.arguments.filter(isFunctionWithBody).at(-1) : undefined;
   const target = isFunctionWithBody(declaration)
     ? declaration
-    : (ts.isVariableDeclaration(declaration) || ts.isPropertyDeclaration(declaration) || ts.isPropertyAssignment(declaration)) &&
-        declaration.initializer !== undefined &&
-        isFunctionWithBody(declaration.initializer)
-      ? declaration.initializer
-      : undefined;
+    : initializer !== undefined && isFunctionWithBody(initializer)
+      ? initializer
+      : wrapped;
   if (target === undefined) return undefined;
   const file = target.getSourceFile();
   return file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file) || claims(file.fileName) !== undefined ? undefined : target;
