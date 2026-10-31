@@ -37,6 +37,18 @@ export function stubPackage(name: string, version: string, declarations: string)
   };
 }
 
+export const kyselyStub = stubPackage(
+  "kysely",
+  "0.28.0",
+  `export interface SelectQueryBuilder<O> {
+     where(column: string, op: string, value: unknown): SelectQueryBuilder<O>;
+     execute(): Promise<O[]>;
+   }
+   export declare class Kysely<DB> {
+     selectFrom(table: string): SelectQueryBuilder<{ id: string }>;
+   }`,
+);
+
 export const prismaStub = stubPackage(
   "@prisma/client",
   "6.1.0",

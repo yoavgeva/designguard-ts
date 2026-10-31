@@ -1,7 +1,10 @@
 import ts from "typescript";
 import { type FunctionLike, type Resolution, resolveCall } from "./resolve.js";
 
-/** A loop a call runs in: a loop statement, or the callback of an array method such as `map()`. */
+/**
+ * A loop a call runs once per item of: a `for`, `for…of` or `for…in` loop, or the callback of an array method such as
+ * `map()`. A `while` loop polls or retries rather than walking items, so it isn't one.
+ */
 export interface Loop {
   readonly node: ts.Node;
   /** How a message names it: `the for…of loop`, `map()`. */
@@ -31,8 +34,6 @@ const STATEMENT_LOOPS: Partial<Record<ts.SyntaxKind, string>> = {
   [ts.SyntaxKind.ForStatement]: "the for loop",
   [ts.SyntaxKind.ForOfStatement]: "the for…of loop",
   [ts.SyntaxKind.ForInStatement]: "the for…in loop",
-  [ts.SyntaxKind.WhileStatement]: "the while loop",
-  [ts.SyntaxKind.DoStatement]: "the do…while loop",
 };
 
 /** The summaries of every function in one of the project's files, the file's top-level code as one more. */

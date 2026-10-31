@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyze, defineAdapter } from "../src/index.js";
-import { prismaStub, project } from "./fixture.js";
+import { kyselyStub, prismaStub, project } from "./fixture.js";
 
 const prisma = defineAdapter({
   name: "prisma",
@@ -62,6 +62,29 @@ describe("queriesInLoops", () => {
     ]);
   });
 
+  it("names a query builder by where it starts and the call that runs it", () => {
+    const kysely = defineAdapter({ name: "kysely", packages: ["kysely"], effects: [{ on: "SelectQueryBuilder.execute", kind: "db.read" }] });
+    const { program } = project({
+      ...kyselyStub,
+      "src/main.ts": `
+        import { Kysely } from "kysely";
+        declare const db: Kysely<object>;
+        export async function show(ids: string[]) {
+          for (const id of ids) {
+            await db
+              .selectFrom("user")
+              .where("id", "=", id)
+              .execute();
+          }
+        }`,
+    });
+    const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
+    if (main === undefined) throw new Error("no src/main.ts");
+    expect(analyze(program, [kysely]).queriesInLoops(main).map((finding) => finding.message)).toEqual([
+      "queries the database once per item: the for…of loop calls db.selectFrom(…).execute()",
+    ]);
+  });
+
   it("reads a client generated into the project as the adapter's package, when the adapter claims its files", () => {
     const generated = defineAdapter({ ...prisma, files: ["**/generated/prisma/**"] });
     const { program } = project({
@@ -82,7 +105,7 @@ describe("queriesInLoops", () => {
     expect(analyze(program, [prisma]).queriesInLoops(main)).toEqual([]);
   });
 
-  it("passes queries outside loops, and loops that touch nothing outside the code", () => {
+  it("passes queries outside loops, polling loops, and loops that touch nothing outside the code", () => {
     expect(
       findings({
         "src/users.ts": users,
@@ -93,6 +116,9 @@ describe("queriesInLoops", () => {
             const labels = ids.map(label);
             for (const id of ids) label(id);
             const later = ids.map((id) => () => loadUser(id));
+            let user = await loadUser("1");
+            while (user === null) user = await loadUser("1");
+            do user = await loadUser("1"); while (user === null);
             return { first, labels, later };
           }`,
       }),

@@ -36,6 +36,12 @@ export interface Analysis {
 
 const cache = new WeakMap<ts.Program, Map<string, Analysis>>();
 
+/**
+ * Each file's summaries, by the adapters they were made with. typescript-eslint's project service builds new programs
+ * as it opens files, and they share the source files that didn't change, so their summaries are read once.
+ */
+const summaryCache = new WeakMap<ts.SourceFile, Map<string, FunctionSummary[]>>();
+
 /** The analysis of a program with these adapters, built once and shared by every rule and file. */
 export function analyze(program: ts.Program, adapters: readonly Adapter[]): Analysis {
   const key = JSON.stringify(adapters);
@@ -56,13 +62,23 @@ function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
   const checker = program.getTypeChecker();
   const root = projectRoot(program);
   const claims = claimsOf(adapters);
+  const key = JSON.stringify(adapters);
   const files = program
     .getSourceFiles()
     .filter((file) => !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined);
   const summaries = new Map<FunctionLike | ts.SourceFile, FunctionSummary>();
   const byFile = new Map<ts.SourceFile, FunctionSummary[]>();
   for (const file of files) {
-    const found = summarize(program, checker, file, claims);
+    let byAdapters = summaryCache.get(file);
+    if (byAdapters === undefined) {
+      byAdapters = new Map();
+      summaryCache.set(file, byAdapters);
+    }
+    let found = byAdapters.get(key);
+    if (found === undefined) {
+      found = summarize(program, checker, file, claims);
+      byAdapters.set(key, found);
+    }
     byFile.set(file, found);
     for (const summary of found) summaries.set(summary.node, summary);
   }
@@ -185,10 +201,30 @@ function propagate(
   return effects;
 }
 
-/** The text a message names a call by, on one line: `prisma.user.findUnique`. */
+/**
+ * The text a message names a call by, on one line: `prisma.user.findUnique`, or for a chain of calls, where it starts
+ * and the call that ends it, as `db.selectFrom(…).execute`.
+ */
 function callee(site: CallSite): string {
-  const text = site.named.getText().replace(/\s+/g, "");
+  const named = site.named;
+  let first: ts.Expression | undefined;
+  for (let node: ts.Expression = named; ; ) {
+    if (ts.isCallExpression(node) || ts.isTaggedTemplateExpression(node)) first = node;
+    if (ts.isPropertyAccessExpression(node) || ts.isCallExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+    else if (ts.isTaggedTemplateExpression(node)) node = node.tag;
+    else break;
+  }
+  const text =
+    first === undefined || !ts.isPropertyAccessExpression(named)
+      ? oneLine(named.getText())
+      : ts.isTaggedTemplateExpression(first)
+        ? `${oneLine(first.tag.getText())}\`…\`.${named.name.text}`
+        : `${oneLine((first as ts.CallExpression).expression.getText())}(…).${named.name.text}`;
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, "");
 }
 
 /** The directory of the program's tsconfig, which message paths are relative to. */
