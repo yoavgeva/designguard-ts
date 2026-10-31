@@ -35,7 +35,10 @@ export const prismaFiles: Record<string, string> = {
   "node_modules/@prisma/client/package.json": JSON.stringify({ name: "@prisma/client", version: "6.1.0", types: "index.d.ts" }),
   "node_modules/@prisma/client/index.d.ts": `
     export declare namespace Prisma {
-      interface UserDelegate { findUnique(args: object): Promise<{ id: string } | null> }
+      interface UserDelegate {
+        findUnique(args: object): Promise<{ id: string } | null>;
+        update(args: object): Promise<{ id: string }>;
+      }
       interface PlanDelegate { findMany(args?: object): Promise<{ id: string }[]> }
     }
     export declare class PrismaClient {
@@ -50,6 +53,8 @@ export const prisma = {
   packages: ["@prisma/client"],
   effects: [
     { on: "*Delegate.{findUnique,findMany}", kind: "db.read" },
+    { on: "*Delegate.update", kind: "db.write" },
   ],
+  lookups: ["*Delegate.findUnique"],
   transactions: [{ on: "PrismaClient.$transaction", body: 0 }],
 };

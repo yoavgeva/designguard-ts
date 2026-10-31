@@ -202,7 +202,7 @@ function functionOf(program: ts.Program, checker: ts.TypeChecker, argument: ts.E
   if (declaration === undefined) return undefined;
   const initializer =
     ts.isVariableDeclaration(declaration) || ts.isPropertyDeclaration(declaration) || ts.isPropertyAssignment(declaration) ? declaration.initializer : undefined;
-  const wrapped = initializer !== undefined && ts.isCallExpression(initializer) ? initializer.arguments.filter(isFunctionWithBody).at(-1) : undefined;
+  const wrapped = initializer !== undefined && ts.isCallExpression(initializer) ? lastFunction(initializer.arguments) : undefined;
   const target = isFunctionWithBody(declaration)
     ? declaration
     : initializer !== undefined && isFunctionWithBody(initializer)
@@ -289,6 +289,14 @@ function lastSegment(pattern: string): RegExp {
 
 function aliased(checker: ts.TypeChecker, symbol: ts.Symbol | undefined): ts.Symbol | undefined {
   return symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+}
+
+function lastFunction(nodes: readonly ts.Node[]): FunctionLike | undefined {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i];
+    if (node !== undefined && isFunctionWithBody(node)) return node;
+  }
+  return undefined;
 }
 
 function isFunctionWithBody(node: ts.Node): node is FunctionLike {

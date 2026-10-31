@@ -55,10 +55,13 @@ export function entryPointsOf(adapter: Adapter, sample: Sample): string[] {
   );
 }
 
-/** What the rules find in a sample with these adapters, as `5: unauthorizedWrites: the POST /orders handler ...`. */
+/**
+ * What the rules find in a sample with these adapters and the standard one, as a project would have them, as
+ * `5: unauthorizedWrites: the POST /orders handler ...`.
+ */
 export function findingsOf(adapters: readonly Adapter[], sample: Sample): string[] {
   return withSample(sample, (program, file) => {
-    const analysis = analyze(program, { adapters, standards: false });
+    const analysis = analyze(program, { adapters });
     const rules = ["queriesInLoops", "ioInTransactions", "unauthorizedWrites", "unauthorizedReads"] as const;
     return rules
       .flatMap((rule) => analysis[rule](file).map((finding) => ({ rule, finding })))

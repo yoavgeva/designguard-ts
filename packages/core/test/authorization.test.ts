@@ -197,3 +197,68 @@ describe("unauthorizedReads", () => {
     ]);
   });
 });
+
+describe("standard entry points", () => {
+  it("finds server functions, exported from a \"use server\" file or marked inline, and route handlers", () => {
+    expect(
+      findings("unauthorizedWrites", {
+        "src/session.ts": `
+          export async function getCurrentUser() { return { id: "1" }; }`,
+        "src/main.ts": `
+          "use server";
+          import { prisma } from "./db.js";
+          import { getCurrentUser } from "./session.js";
+          export async function deletePost(id: string) {
+            await prisma.user.update({ where: { id }, data: {} });
+          }
+          export async function renamePost(id: string) {
+            const user = await getCurrentUser();
+            await prisma.user.update({ where: { id, ownerId: user.id }, data: {} });
+          }
+          async function helper(id: string) {
+            await prisma.user.update({ where: { id }, data: {} });
+          }`,
+      }),
+    ).toEqual([
+      "6: deletePost() writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+    expect(
+      findings("unauthorizedWrites", {
+        "src/main.ts": `
+          import { prisma } from "./db.js";
+          export function Page() {
+            async function remove(id: string) {
+              "use server";
+              await prisma.user.update({ where: { id }, data: {} });
+            }
+            return remove;
+          }`,
+      }),
+    ).toEqual([
+      "6: remove() writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+  });
+
+  it("finds route handlers: exported functions named for a method, taking a Request", () => {
+    const routes = `
+      import { prisma } from "./db.js";
+      export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+        const { id } = await params;
+        await prisma.user.update({ where: { id }, data: {} });
+        return Response.json({});
+      }
+      export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+        const { id } = await params;
+        return Response.json(await prisma.user.findUnique({ where: { id } }));
+      }
+      export async function PUT(id: string) {
+        await prisma.user.update({ where: { id }, data: {} });
+      }`;
+    expect(findings("unauthorizedWrites", { "src/main.ts": routes })).toEqual([
+      "5: POST() writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+    expect(findings("unauthorizedReads", { "src/main.ts": routes })).toEqual([
+      "10: GET() reads a record by a key the request sends through prisma.user.findUnique(): nothing checks that the user asking may see it",
+    ]);
+  });
+});

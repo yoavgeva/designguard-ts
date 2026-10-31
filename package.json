@@ -7,8 +7,8 @@
     "node": ">=20.19"
   },
   "scripts": {
-    "build": "tsc -b packages/core packages/adapter-kit packages/eslint-plugin packages/adapters/prisma packages/adapters/drizzle packages/adapters/typeorm packages/adapters/kysely",
-    "typecheck": "pnpm build && tsc -p packages/core/test && tsc -p packages/eslint-plugin/test && tsc -p packages/adapter-kit/test && tsc -p packages/adapters/prisma/test && tsc -p packages/adapters/drizzle/test && tsc -p packages/adapters/typeorm/test && tsc -p packages/adapters/kysely/test",
+    "build": "tsc -b packages/core packages/adapter-kit packages/eslint-plugin packages/adapters/prisma packages/adapters/drizzle packages/adapters/typeorm packages/adapters/kysely packages/adapters/express packages/adapters/hono packages/adapters/trpc packages/adapters/nestjs packages/adapters/authjs",
+    "typecheck": "pnpm build && tsc -p packages/core/test && tsc -p packages/eslint-plugin/test && tsc -p packages/adapter-kit/test && tsc -p packages/adapters/prisma/test && tsc -p packages/adapters/drizzle/test && tsc -p packages/adapters/typeorm/test && tsc -p packages/adapters/kysely/test && tsc -p packages/adapters/express/test && tsc -p packages/adapters/hono/test && tsc -p packages/adapters/trpc/test && tsc -p packages/adapters/nestjs/test && tsc -p packages/adapters/authjs/test",
     "lint": "eslint .",
     "test": "vitest run"
   },
