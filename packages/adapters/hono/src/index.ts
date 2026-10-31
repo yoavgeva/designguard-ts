@@ -4,7 +4,7 @@ import { defineAdapter, type ParameterSpec } from "@designguard/core";
 // sends, through `c.req`.
 const parameters: ParameterSpec[] = [
   { at: 0, holds: "context" },
-  { at: 0, path: ["req", "{json(),param(),query(),queries(),valid(),parseBody(),formData(),text(),arrayBuffer(),blob()}"], holds: "input" },
+  { at: 0, path: ["req", "{json(),param(),query(),queries(),valid(),parseBody(),formData(),text(),arrayBuffer(),blob(),header()}"], holds: "input" },
 ];
 
 /** Hono 4: the routes an application registers, with the middleware given before the handler. */

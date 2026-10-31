@@ -153,6 +153,12 @@ export function flowOf(
       bind(node.name, node.initializer === undefined ? undefined : valueOf(node.initializer), node.initializer);
       return;
     }
+    // A variable given its value later, as `let body; try { body = await req.json(); } ...` gives it.
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+      visit(node.right);
+      bind(node.left, valueOf(node.right), node.right);
+      return;
+    }
     const step = ts.isExpression(node) ? stepOf(node) : undefined;
     if (step !== undefined) {
       // A method given the name of what it reads, as `c.req.param("token")` and `req.header("x-signature")` are.

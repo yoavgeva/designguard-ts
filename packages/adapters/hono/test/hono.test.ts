@@ -9,6 +9,7 @@ const files = {
     "4.12.12",
     `export interface HonoRequest {
        param(name: string): string;
+       header(name: string): string | undefined;
        json<T = any>(): Promise<T>;
        valid(target: string): any;
      }
@@ -16,7 +17,7 @@ const files = {
        req: HonoRequest;
        var: V;
        get<K extends keyof V>(key: K): V[K];
-       json(value: unknown): Response;
+       json(value: unknown, status?: number): Response;
      }
      export type Handler<V> = (c: Context<V>, next: () => Promise<void>) => unknown;
      export interface HandlerInterface<V> { (path: string, ...handlers: Handler<V>[]): Hono<V> }
@@ -68,7 +69,12 @@ describe("hono adapter", () => {
             await db.save({ id: body.id, owner: c.var.user.id });
             return c.json({});
           });
-          app.get("/posts/:id", async (c) => c.json(await db.find(c.req.param("id"))));`,
+          app.get("/posts/:id", async (c) => c.json(await db.find(c.req.param("id"))));
+          app.post("/hooks", async (c) => {
+            if (c.req.header("x-signature") !== process.env.SIGNING) return c.json({}, 401);
+            await db.save({ id: "1" });
+            return c.json({});
+          });`,
       }),
     ).toEqual([
       "6: unauthorizedWrites: the DELETE /posts/:id handler writes to the database through db.save() with nothing checking that the user asking may",

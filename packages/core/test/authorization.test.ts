@@ -136,6 +136,19 @@ describe("unauthorizedWrites", () => {
           app.post("/hooks", async (req) => {
             const signature = req.params["x-signature"];
             await prisma.user.update({ where: { id: String(signature) }, data: {} });
+          });
+          app.post("/sync", async (req) => {
+            const secretHeader = req.headers["x-sync"];
+            if (secretHeader !== process.env.SYNC) throw new Error("403");
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+          });
+          app.post("/verify", async (req) => {
+            let code;
+            code = req.params.passwordResetToken;
+            await prisma.user.update({ where: { id: String(code) }, data: {} });
+          });
+          app.post("/workspaces/:id", async (req) => {
+            await prisma.user.update({ where: { id: req.params.id, workspaceId: req.workspace?.id }, data: {} });
           });`,
       }),
     ).toEqual([

@@ -25,6 +25,11 @@ export interface EntryPoint {
   readonly middleware: readonly Middleware[];
   /** The decorator calls on it and on its class, which may check permissions. */
   readonly decorators: readonly ts.CallExpression[];
+  /**
+   * The variables its registration's chain goes through, as `publicProcedure` and `adminProcedure`, whose names can
+   * say who may call it.
+   */
+  readonly builders: readonly string[];
 }
 
 export interface Middleware {
@@ -106,6 +111,7 @@ function declared(handler: FunctionLike, label: string, spec: EntryPointSpec, de
     },
     middleware: [],
     decorators,
+    builders: [],
   };
 }
 
@@ -124,7 +130,8 @@ function registered(
   const handler = argument === undefined ? undefined : functionOf(program, checker, argument, claims);
   if (argument === undefined || handler === undefined) return undefined;
   const middleware = call.arguments.slice(0, index).flatMap((before) => middlewareOf(program, checker, before, claims));
-  if (spec.middleware !== undefined) middleware.unshift(...chainMiddleware(program, checker, call, spec, specs, resolve, claims));
+  const chain = spec.middleware === undefined ? { middleware: [], builders: [] } : chainMiddleware(program, checker, call, spec, specs, resolve, claims);
+  middleware.unshift(...chain.middleware);
   return {
     handler,
     at: handler === argument ? undefined : argument,
@@ -134,6 +141,7 @@ function registered(
     decoratorsOf: () => [],
     middleware,
     decorators: [],
+    builders: chain.builders,
   };
 }
 
@@ -149,10 +157,14 @@ function chainMiddleware(
   specs: EntrySpecs,
   resolve: (call: ts.CallExpression) => Resolution,
   claims: Claims,
-): Middleware[] {
+): { middleware: Middleware[]; builders: string[] } {
   const found: Middleware[] = [];
+  const builders: string[] = [];
   const seen = new Set<ts.Node>();
   let node: ts.Expression | undefined = ts.isPropertyAccessExpression(call.expression) ? call.expression.expression : undefined;
+  // Builders are the variables of the receiver's type, as `authedProcedure` is a ProcedureBuilder, not the objects
+  // that make them, as `t` and `initTRPC` do.
+  const builderType = node === undefined ? undefined : checker.getTypeAtLocation(node).getSymbol();
   while (node !== undefined && !seen.has(node)) {
     seen.add(node);
     if (ts.isCallExpression(node)) {
@@ -162,13 +174,14 @@ function chainMiddleware(
       node = ts.isPropertyAccessExpression(node.expression) ? node.expression.expression : undefined;
     } else if (ts.isPropertyAccessExpression(node)) node = node.expression;
     else if (ts.isIdentifier(node)) {
+      if (builderType !== undefined && checker.getTypeAtLocation(node).getSymbol() === builderType) builders.push(node.text);
       const symbol = aliased(checker, checker.getSymbolAtLocation(node));
       const declaration = symbol?.valueDeclaration;
       node = declaration !== undefined && ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined;
     } else node = undefined;
   }
   // Found from the registration outwards; they run from the start of the chain.
-  return found.reverse();
+  return { middleware: found.reverse(), builders };
 }
 
 /**

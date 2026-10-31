@@ -6,7 +6,7 @@ const NETWORK = "{http,https,http2,net,tls,dgram,node:http,node:https,node:http2
 // params, its second argument's, are what the request sends.
 const request: ParameterSpec[] = [
   { at: 0, holds: "context" },
-  { at: 0, path: ["{json(),formData(),text(),arrayBuffer(),blob(),body,url,nextUrl}"], holds: "input" },
+  { at: 0, path: ["{json(),formData(),text(),arrayBuffer(),blob(),body,url,nextUrl,headers,cookies}"], holds: "input" },
   { at: 1, path: ["params"], holds: "input" },
 ];
 

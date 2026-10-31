@@ -51,10 +51,14 @@ describe("kysely adapter's reads", () => {
        select(selection: (eb: ExpressionBuilder) => unknown): SelectQueryBuilder<O>;
        where(column: string, op: string, value: unknown): SelectQueryBuilder<O>;
        limit(count: number): SelectQueryBuilder<O>;
+       $if(condition: boolean, add: (qb: SelectQueryBuilder<O>) => SelectQueryBuilder<O>): SelectQueryBuilder<O>;
        execute(): Promise<O[]>;
        executeTakeFirst(): Promise<O | undefined>;
      }
-     export declare class QueryCreator<DB> { selectFrom(table: string): SelectQueryBuilder<{ id: string }> }
+     export declare class QueryCreator<DB> {
+       selectFrom(table: string): SelectQueryBuilder<{ id: string }>;
+       with(name: string, query: (db: QueryCreator<DB>) => unknown): QueryCreator<DB>;
+     }
      export declare class Kysely<DB> extends QueryCreator<DB> {}`,
   );
 
@@ -69,7 +73,9 @@ describe("kysely adapter's reads", () => {
           export async function list() { return db.selectFrom("users").selectAll().execute(); }
           export async function some() { return db.selectFrom("users").selectAll().limit(20).execute(); }
           export async function total() { return db.selectFrom("users").select((eb) => eb.fn.countAll().as("n")).execute(); }
-          export async function one(id: string) { return db.selectFrom("users").selectAll().where("id", "=", id).executeTakeFirst(); }`,
+          export async function one(id: string) { return db.selectFrom("users").selectAll().where("id", "=", id).executeTakeFirst(); }
+          export async function maybe(id?: string) { return db.selectFrom("users").selectAll().$if(id !== undefined, (qb) => qb.where("id", "=", id)).execute(); }
+          export async function shared() { return db.with("mine", (q) => q.selectFrom("users").where("id", "=", "1")).selectFrom("mine").selectAll().execute(); }`,
       }),
     ).toEqual([
       "5: unboundedQueries: list() loads every row through db.selectFrom(), so each request loads more as the table grows",

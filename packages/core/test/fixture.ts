@@ -77,7 +77,13 @@ export const prismaStub = stubPackage(
 export const routerStub = stubPackage(
   "router",
   "1.0.0",
-  `export interface Request { params: Record<string, string>; body: unknown; user?: { id: string } }
+  `export interface Request {
+     params: Record<string, string>;
+     headers: Record<string, string | undefined>;
+     body: unknown;
+     user?: { id: string };
+     workspace?: { id: string };
+   }
    export interface Response { json(value: unknown): void }
    export type Handler = (req: Request, res: Response, next: () => void) => unknown;
    export interface RouterMatcher { (path: string, ...handlers: Handler[]): void }
@@ -87,7 +93,7 @@ export const routerStub = stubPackage(
 
 const parameters = [
   { at: 0, holds: "context" },
-  { at: 0, path: ["{body,params}"], holds: "input" },
+  { at: 0, path: ["{body,params,headers}"], holds: "input" },
   { at: 1, holds: "context" },
 ] as const;
 

@@ -60,6 +60,8 @@ export interface EntryPointRole {
   readonly reads: boolean;
   /** The names of the middleware that runs before it, "" for one written inline. */
   readonly middleware: readonly string[];
+  /** The variables its registration's chain goes through, as `publicProcedure`. */
+  readonly builders: readonly string[];
 }
 
 export interface Explanation {
@@ -352,11 +354,13 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       const check = effectsOfCall(site).get("check");
       if (check !== undefined) return `checks permissions through ${describe(check)}`;
     }
+    // A name can state who may call a handler, as `requireAdmin` and `publicProcedure` do.
+    for (const builder of entry.builders) if (isRequirementName(builder)) return `is built from ${builder}`;
     for (const middleware of entry.middleware) {
-      if (isCheckName(middleware.name)) return `runs after ${middleware.name}`;
+      if (isRequirementName(middleware.name)) return `runs after ${middleware.name}`;
       const function_ = middleware.function;
       if (function_ === undefined) continue;
-      if (isCheckName(nameOf(function_))) return `runs after ${nameOf(function_)}`;
+      if (isRequirementName(nameOf(function_))) return `runs after ${nameOf(function_)}`;
       const check = effectsOf(function_).get("check");
       if (check !== undefined) return `runs after middleware that checks permissions through ${describe(check)}`;
     }
@@ -746,6 +750,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         label: entry.label,
         reads: entry.reads,
         middleware: entry.middleware.map((middleware) => middleware.name),
+        builders: entry.builders,
       }));
     },
     roles(file) {
@@ -870,6 +875,15 @@ function loadsEveryRow(call: ts.CallExpression, spec: ListSpec): boolean {
     });
   }
   const names: string[] = [];
+  // The calls before it in its chain, as Kysely's with() before selectFrom(), and then those after it.
+  for (let inner: ts.Expression = call.expression; ; ) {
+    if (ts.isPropertyAccessExpression(inner)) inner = inner.expression;
+    else if (ts.isCallExpression(inner)) {
+      const name = lastName(inner.expression);
+      if (name !== undefined && bounds.test(name)) return false;
+      inner = inner.expression;
+    } else break;
+  }
   let node: ts.Expression = call;
   for (;;) {
     const access = node.parent;

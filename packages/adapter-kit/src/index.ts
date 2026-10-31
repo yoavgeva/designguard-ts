@@ -50,7 +50,8 @@ export function entryPointsOf(adapter: Adapter, sample: Sample): string[] {
       .entryPoints(file)
       .map((entry) => {
         const after = entry.middleware.length === 0 ? "" : `, after ${entry.middleware.map((name) => (name === "" ? "inline middleware" : name)).join(", ")}`;
-        return `${String(lineOf(entry.node))}: ${entry.label}${entry.reads ? " (reads)" : ""}${after}`;
+        const built = entry.builders.length === 0 ? "" : `, built from ${entry.builders.join(", ")}`;
+        return `${String(lineOf(entry.node))}: ${entry.label}${entry.reads ? " (reads)" : ""}${after}${built}`;
       }),
   );
 }

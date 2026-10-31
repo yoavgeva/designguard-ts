@@ -19,7 +19,8 @@ export default defineAdapter({
   lists: [
     {
       on: "{QueryCreator,Kysely,Transaction}.selectFrom",
-      bounds: "{where,whereRef,limit,top,groupBy}",
+      // $if() and $call() may add a filter; a query over a with() reads what the common table expression selected.
+      bounds: "{where,whereRef,limit,top,groupBy,$if,$call,with,withRecursive}",
       runs: "{execute,stream}",
       aggregates: "{count,countAll,sum,avg,min,max,agg}",
     },

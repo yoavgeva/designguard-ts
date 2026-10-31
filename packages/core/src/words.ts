@@ -18,7 +18,7 @@ const ASKING = new Set(["current", "me", "my", "whoami", "logged", "signed", "au
 const FETCHING = new Set(["get", "require", "ensure", "assert", "validate", "verify", "check", "load", "read", "fetch", "use"]);
 
 /** Words that name a secret a request can prove itself with: a token in a link, a webhook's signature, an API key. */
-const SECRET = new Set(["token", "secret", "signature", "otp", "nonce", "hmac", "passcode"]);
+const SECRET = new Set(["token", "secret", "signature", "otp", "nonce", "hmac", "passcode", "password", "authorization"]);
 
 /** Whether a name names a secret, as `token`, `x-signature` and `apiKey` do. */
 export function isSecretName(name: string): boolean {
@@ -26,9 +26,15 @@ export function isSecretName(name: string): boolean {
   return words.some((word) => SECRET.has(word)) || (words.includes("api") && words.includes("key"));
 }
 
-/** Whether a property or variable name names the user asking, when it's read from a request's context. */
+/** Words that name what the user asking acts within, which a request's context holds for them, as `ctx.workspace`. */
+const SCOPE = new Set(["workspace", "tenant", "organization", "org", "team", "scope"]);
+
+/**
+ * Whether a property or variable name names the user asking, or the workspace or team they act within, when it's
+ * read from a request's context.
+ */
 export function isUserName(name: string): boolean {
-  return wordsOf(name).some((word) => USER.has(word));
+  return wordsOf(name).some((word) => USER.has(word) || SCOPE.has(word));
 }
 
 /**

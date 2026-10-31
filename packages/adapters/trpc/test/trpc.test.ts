@@ -62,9 +62,9 @@ describe("trpc adapter", () => {
           });`,
       }),
     ).toEqual([
-      "4: the list query (reads)",
-      "5: the remove mutation, after isAuthed",
-      "6: the purge mutation, after isAuthed, isAdmin",
+      "4: the list query (reads), built from publicProcedure",
+      "5: the remove mutation, after isAuthed, built from authedProcedure",
+      "6: the purge mutation, after isAuthed, isAdmin, built from adminProcedure, authedProcedure",
     ]);
   });
 
@@ -87,7 +87,8 @@ describe("trpc adapter", () => {
               await db.save({ id: input.id });
             }),
             removeLater: authedProcedure.input(${id}).mutation(async (opts) => removeHandler(opts)),
-            byId: publicProcedure.input(${id}).query(async ({ input }) => db.find(input.id)),
+            byId: authedProcedure.input(${id}).query(async ({ input }) => db.find(input.id)),
+            publicById: publicProcedure.input(${id}).query(async ({ input }) => db.find(input.id)),
           });`,
       }),
     ).toEqual([
