@@ -16,7 +16,7 @@ function findings(files: Record<string, string>): string[] {
   const { program } = project({ ...prismaStub, ...files });
   const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
   if (main === undefined) throw new Error("no src/main.ts");
-  return analyze(program, [prisma])
+  return analyze(program, { adapters: [prisma] })
     .queriesInLoops(main)
     .map((finding) => `${main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1}: ${finding.message}`);
 }
@@ -80,7 +80,7 @@ describe("queriesInLoops", () => {
     });
     const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
     if (main === undefined) throw new Error("no src/main.ts");
-    expect(analyze(program, [kysely]).queriesInLoops(main).map((finding) => finding.message)).toEqual([
+    expect(analyze(program, { adapters: [kysely] }).queriesInLoops(main).map((finding) => finding.message)).toEqual([
       "queries the database once per item: the for…of loop calls db.selectFrom(…).execute()",
     ]);
   });
@@ -99,10 +99,10 @@ describe("queriesInLoops", () => {
     });
     const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
     if (main === undefined) throw new Error("no src/main.ts");
-    expect(analyze(program, [generated]).queriesInLoops(main).map((finding) => finding.message)).toEqual([
+    expect(analyze(program, { adapters: [generated] }).queriesInLoops(main).map((finding) => finding.message)).toEqual([
       "queries the database once per item: the for…of loop calls prisma.user.findUnique()",
     ]);
-    expect(analyze(program, [prisma]).queriesInLoops(main)).toEqual([]);
+    expect(analyze(program, { adapters: [prisma] }).queriesInLoops(main)).toEqual([]);
   });
 
   it("passes queries outside loops, polling loops, and loops that touch nothing outside the code", () => {

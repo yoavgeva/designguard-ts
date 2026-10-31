@@ -3,12 +3,29 @@ import ts from "typescript";
 import type { Adapter, EffectKind } from "./adapter.js";
 import { glob } from "./patterns.js";
 import type { FunctionLike } from "./resolve.js";
-import { type CallSite, type FunctionSummary, loopCalls, ownersOf, summarizeFunction } from "./summaries.js";
+import { type CallSite, type FunctionSummary, loopCalls, nameOf, ownersOf, summarizeFunction } from "./summaries.js";
 
-/** A finding, at the node the rule reports. */
+/** A function in the project, by its file's absolute path and its name, as `nameOf` gives it. */
+export interface Place {
+  readonly file: string;
+  readonly symbol: string;
+}
+
+/** A step on a finding's way: a project function, or, last, a package's declaration by its qualified name. */
+export type Reached = Place | { readonly package: string; readonly symbol: string };
+
+/** A finding, at the node the rule reports, with the function it's in and the steps it leads through. */
 export interface Finding {
   readonly node: ts.Node;
   readonly message: string;
+  readonly at: Place;
+  readonly reaching: readonly Reached[];
+}
+
+export interface AnalysisOptions {
+  readonly adapters: readonly Adapter[];
+  /** The directory message paths are relative to: the tsconfig's, unless given. */
+  readonly root?: string;
 }
 
 /** How a function reaches an effect: the call in it that leads there, and the rest of the way from that call. */
@@ -58,10 +75,10 @@ function cached<K extends object, V>(store: WeakMap<K, Map<string, V>>, node: K,
   return value;
 }
 
-/** The analysis of a program with these adapters, built once and shared by every rule and file. */
-export function analyze(program: ts.Program, adapters: readonly Adapter[]): Analysis {
+/** The analysis of a program with these options, built once and shared by every rule and file. */
+export function analyze(program: ts.Program, { adapters, root }: AnalysisOptions): Analysis {
   const key = JSON.stringify(adapters);
-  return cached(cache, program, key, () => build(program, adapters, key));
+  return cached(cache, program, `${key}\0${root ?? ""}`, () => build(program, adapters, key, root ?? projectRoot(program)));
 }
 
 type Owner = FunctionLike | ts.SourceFile;
@@ -70,9 +87,8 @@ type Owner = FunctionLike | ts.SourceFile;
  * The analysis reads code only as a question needs it: the loop calls of the file asked about, and the functions
  * those calls reach.
  */
-function build(program: ts.Program, adapters: readonly Adapter[], key: string): Analysis {
+function build(program: ts.Program, adapters: readonly Adapter[], key: string, root: string): Analysis {
   const checker = program.getTypeChecker();
-  const root = projectRoot(program);
   const claims = claimsOf(adapters);
   const matchers = adapters.flatMap((adapter) =>
     (adapter.effects ?? []).map((effect) => ({ packages: adapter.packages, pattern: glob(effect.on), kind: effect.kind })),
@@ -172,7 +188,12 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string): 
         const found = effectsOfCall(site);
         const trace = found.get("db.read") ?? found.get("db.write");
         if (trace !== undefined && site.loop !== undefined) {
-          findings.push({ node: site.node, message: `queries the database once per item: ${site.loop.label} calls ${describe(trace)}` });
+          findings.push({
+            node: site.node,
+            message: `queries the database once per item: ${site.loop.label} calls ${describe(trace)}`,
+            at: placeOf(site.owner),
+            reaching: reachingOf(trace),
+          });
         }
       }
       return findings;
@@ -197,6 +218,20 @@ function build(program: ts.Program, adapters: readonly Adapter[], key: string): 
       return stats;
     },
   };
+}
+
+function placeOf(owner: Owner): Place {
+  return { file: owner.getSourceFile().fileName, symbol: nameOf(owner) };
+}
+
+/** The functions a trace goes through after its first call, then the package declaration it ends at, if any. */
+function reachingOf(trace: Trace): Reached[] {
+  const steps: Reached[] = [];
+  for (let step: Trace | undefined = trace; step !== undefined; step = step.next) {
+    if (step.next !== undefined) steps.push(placeOf(step.next.site.owner));
+    else if (step.site.resolution.kind === "dependency") steps.push({ package: step.site.resolution.package, symbol: step.site.resolution.name });
+  }
+  return steps;
 }
 
 /**

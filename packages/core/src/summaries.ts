@@ -12,6 +12,8 @@ export interface Loop {
 }
 
 export interface CallSite {
+  /** The function the call is in, or the file for top-level code. */
+  readonly owner: FunctionLike | ts.SourceFile;
   /** The call, or the argument that passes a function by name. */
   readonly node: ts.CallLikeExpression | ts.Expression;
   /** The expression a message names it by: the callee, or the function passed. */
@@ -55,6 +57,33 @@ export function loopCalls(program: ts.Program, checker: ts.TypeChecker, file: ts
   return walk(program, checker, file, claims, { nested: "descend", resolveAll: false }).filter((site) => site.loop !== undefined);
 }
 
+/**
+ * The name a function goes by in options and messages: `loadUser`, `UserService.load`, `users.find`, or "" for a
+ * file's top-level code.
+ */
+export function nameOf(owner: Owner): string {
+  if (ts.isSourceFile(owner)) return "";
+  const own = owner.name !== undefined && (ts.isIdentifier(owner.name) || ts.isPrivateIdentifier(owner.name)) ? owner.name.text : undefined;
+  const parent = owner.parent;
+  if (ts.isConstructorDeclaration(owner)) return `${className(parent)}.constructor`;
+  if (own !== undefined && ts.isClassLike(parent)) return `${className(parent)}.${own}`;
+  if (own !== undefined && ts.isObjectLiteralExpression(parent)) {
+    const holder = parent.parent;
+    return holder !== undefined && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name) ? `${holder.name.text}.${own}` : own;
+  }
+  if (own !== undefined) return own;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+  if (ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) {
+    const property = ts.isIdentifier(parent.name) ? parent.name.text : "<anonymous>";
+    return ts.isPropertyDeclaration(parent) ? `${className(parent.parent)}.${property}` : property;
+  }
+  return "<anonymous>";
+}
+
+function className(node: ts.Node): string {
+  return ts.isClassLike(node) && node.name !== undefined ? node.name.text : "<anonymous>";
+}
+
 /** Every function in a file with code of its own, the file's top-level code first. */
 export function ownersOf(file: ts.SourceFile): Owner[] {
   const owners: Owner[] = [file];
@@ -78,21 +107,27 @@ function walk(
   options: { nested: "skip" | "descend"; resolveAll: boolean },
 ): CallSite[] {
   const calls: CallSite[] = [];
+  let current: Owner = owner;
   const visit = (node: ts.Node, loop: Loop | undefined): void => {
     if (node !== owner && isFunctionWithBody(node) && !isInlineCallback(node)) {
-      if (options.nested === "descend") visit(node.body, undefined);
+      if (options.nested === "descend") {
+        const outer = current;
+        current = node;
+        visit(node.body, undefined);
+        current = outer;
+      }
       return;
     }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const candidate = ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && LOOPING_NAMES.has(node.expression.name.text);
       const resolution = options.resolveAll || loop !== undefined || candidate ? resolveCall(program, checker, node, claims) : undefined;
-      if (resolution !== undefined) calls.push({ node, named: node.expression, resolution, loop });
+      if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop });
       visit(node.expression, loop);
       const perItem = resolution === undefined ? undefined : loopingMethod(node, resolution);
       for (const argument of node.arguments ?? []) {
         const inLoop = perItem ?? loop;
         const passed = options.resolveAll || inLoop !== undefined ? passedFunction(program, checker, argument, claims) : undefined;
-        if (passed !== undefined) calls.push({ node: argument, named: argument, resolution: passed, loop: inLoop });
+        if (passed !== undefined) calls.push({ owner: current, node: argument, named: argument, resolution: passed, loop: inLoop });
         visit(argument, inLoop);
       }
       return;

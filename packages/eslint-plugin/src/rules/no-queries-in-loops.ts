@@ -1,19 +1,20 @@
-import { analysisFor, createRule, report } from "../analysis.js";
+import { analysisFor, createRule, reportAll } from "../analysis.js";
+import { type SharedOptions, sharedSchema } from "../options.js";
 
-export const noQueriesInLoops = createRule({
+export const noQueriesInLoops = createRule<[SharedOptions], "finding">({
   name: "no-queries-in-loops",
   meta: {
     type: "problem",
     docs: { description: "Disallow database queries made once per item of a loop, directly or through other functions: N+1" },
     messages: { finding: "{{message}}" },
-    schema: [],
+    schema: [sharedSchema],
   },
-  defaultOptions: [],
+  defaultOptions: [{}],
   create(context) {
-    const { analysis, file } = analysisFor(context);
+    const { analysis, file, root } = analysisFor(context);
     return {
       Program() {
-        for (const finding of analysis.queriesInLoops(file)) report(context, finding);
+        reportAll(context, analysis.queriesInLoops(file), root);
       },
     };
   },
