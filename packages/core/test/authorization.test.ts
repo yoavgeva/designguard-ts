@@ -1,17 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyze, defineAdapter } from "../src/index.js";
-import { prismaStub, project, stubPackage } from "./fixture.js";
-
-const routerStub = stubPackage(
-  "router",
-  "1.0.0",
-  `export interface Request { params: Record<string, string>; body: unknown; user?: { id: string } }
-   export interface Response { json(value: unknown): void }
-   export type Handler = (req: Request, res: Response, next: () => void) => unknown;
-   export interface RouterMatcher { (path: string, ...handlers: Handler[]): void }
-   export interface Router { get: RouterMatcher; post: RouterMatcher; delete: RouterMatcher }
-   export declare function router(): Router;`,
-);
+import { prismaStub, project, router, routerStub, stubPackage } from "./fixture.js";
 
 const authStub = stubPackage(
   "auth",
@@ -19,21 +8,6 @@ const authStub = stubPackage(
   `export declare function getServerSession(options: object): Promise<{ user: { id: string } } | null>;
    export declare function authorize(user: unknown, action: string): void;`,
 );
-
-const parameters = [
-  { at: 0, holds: "context" },
-  { at: 0, path: ["{body,params}"], holds: "input" },
-  { at: 1, holds: "context" },
-] as const;
-
-const router = defineAdapter({
-  name: "router",
-  packages: ["router"],
-  entryPoints: [
-    { call: "Router.get", reads: true, parameters },
-    { call: "Router.{post,delete}", parameters },
-  ],
-});
 
 const auth = defineAdapter({ name: "auth", packages: ["auth"], users: ["getServerSession"] });
 

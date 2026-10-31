@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { EntryPointSpec, ParameterSpec } from "./adapter.js";
 import { glob } from "./patterns.js";
-import { type FunctionLike, type Resolution, resolveCall } from "./resolve.js";
+import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from "./resolve.js";
 import { nameOf } from "./summaries.js";
 
 /** A function that handles requests, found where an adapter's entry point registers or marks it. */
@@ -210,7 +210,7 @@ function functionOf(program: ts.Program, checker: ts.TypeChecker, argument: ts.E
       : wrapped;
   if (target === undefined) return undefined;
   const file = target.getSourceFile();
-  return file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file) || claims(file.fileName) !== undefined ? undefined : target;
+  return !isProjectSource(file) || claims(file.fileName) !== undefined ? undefined : target;
 }
 
 /** The spec whose `exports` names an exported function and whose `takes` its first parameter's type matches. */

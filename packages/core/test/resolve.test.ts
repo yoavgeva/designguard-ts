@@ -4,8 +4,8 @@ import { resolveCall } from "../src/resolve.js";
 import { prismaStub, project, stubPackage } from "./fixture.js";
 
 /** Every call in `src/main.ts`, by its callee's text, resolved. */
-function resolutions(files: Record<string, string>) {
-  const { program } = project(files);
+function resolutions(files: Record<string, string>, links: Record<string, string> = {}) {
+  const { program } = project(files, links);
   const checker = program.getTypeChecker();
   const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
   if (main === undefined) throw new Error("no src/main.ts");
@@ -110,5 +110,20 @@ describe("resolveCall", () => {
       "app.get": { kind: "dependency", package: "router", name: "Router.get" },
       Post: { kind: "dependency", package: "router", name: "Post" },
     });
+  });
+
+  it("follows calls into a workspace package linked into node_modules as the project's own code", () => {
+    expect(
+      resolutions(
+        {
+          "packages/services/package.json": JSON.stringify({ name: "@acme/services", type: "module", exports: { ".": "./src/index.ts" } }),
+          "packages/services/src/index.ts": "export function createKey(name: string) { return name; }",
+          "src/main.ts": `
+            import { createKey } from "@acme/services";
+            createKey("ci");`,
+        },
+        { "node_modules/@acme/services": "packages/services" },
+      ),
+    ).toEqual({ createKey: { kind: "project", targets: ["index.ts#createKey"] } });
   });
 });

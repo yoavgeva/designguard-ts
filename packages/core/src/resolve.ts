@@ -39,7 +39,7 @@ export function resolveCall(
   if (program.isSourceFileDefaultLibrary(file)) return { kind: "lib", name: name(), declaration };
   const claimed = claims(file.fileName);
   if (claimed !== undefined) return { kind: "dependency", package: claimed, name: name(), declaration };
-  if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file)) {
+  if (!isProjectSource(file)) {
     return { kind: "dependency", package: packageOf(file.fileName), name: name(), declaration };
   }
   const targets = implementations(program, checker, declaration);
@@ -145,7 +145,7 @@ function heritageIndex(program: ts.Program, checker: ts.TypeChecker): Map<ts.Sym
     ts.forEachChild(node, visit);
   };
   for (const file of program.getSourceFiles()) {
-    if (!file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file)) visit(file);
+    if (isProjectSource(file)) visit(file);
   }
   return index;
 }
@@ -165,6 +165,15 @@ function nameOfSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): string {
     .getFullyQualifiedName(symbol)
     .replace(/^"[^"]*\/[^"]*"\./, "")
     .replace(/^"([^"]+)"\./, "$1.");
+}
+
+/**
+ * Whether a file is the project's own code: source, not declarations, and not inside `node_modules`. A workspace
+ * package linked into `node_modules` is read at the path it's linked to, so its sources are the project's too, though
+ * TypeScript counts them as an external library's.
+ */
+export function isProjectSource(file: ts.SourceFile): boolean {
+  return !file.isDeclarationFile && !file.fileName.includes("/node_modules/");
 }
 
 /** The package a file under `node_modules` belongs to, with `@types/scope__name` read as `@scope/name`. */

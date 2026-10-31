@@ -76,6 +76,24 @@ export interface WriteSpec {
 }
 
 /**
+ * A read that loads every row unless something filters or limits it:
+ *
+ * - with `argument`, a property of that argument named by `bounds`, as Prisma's `findMany({ where, take })` has; a
+ *   read given no such argument, or an object without those properties, loads every row;
+ * - without it, a call in the chain after `on` named by `bounds`, as Drizzle's `db.select().from(t).where(...)` makes.
+ *   The chain must run the query: end in a call `runs` names, as Kysely's `execute()`, or, without `runs`, be
+ *   awaited.
+ *
+ * A read whose options or chain come from elsewhere, as a variable holds them, isn't reported: they may bound it.
+ */
+export interface ListSpec {
+  readonly on: string;
+  readonly argument?: number;
+  readonly bounds: string;
+  readonly runs?: string;
+}
+
+/**
  * What designguard knows about a library: data, so ESLint can cache and print the configuration that holds it.
  * `packages` are the npm packages whose declarations the patterns match.
  */
@@ -102,6 +120,7 @@ export interface Adapter {
   /** Reads of one record by its key, as Prisma's `findUnique`. */
   readonly lookups?: readonly string[];
   readonly writes?: readonly WriteSpec[];
+  readonly lists?: readonly ListSpec[];
 }
 
 export function defineAdapter<const A extends Adapter>(adapter: A): A {

@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import semver from "semver";
 import ts from "typescript";
-import type { Adapter, EffectKind, EntryPointSpec } from "./adapter.js";
+import type { Adapter, EffectKind, EntryPointSpec, ListSpec } from "./adapter.js";
 import { glob } from "./patterns.js";
-import { type FunctionLike, resolveCall } from "./resolve.js";
-import { callee } from "./names.js";
-import { type EntryPoint, entriesOf, type EntrySpecs, type Middleware } from "./entries.js";
+import { type FunctionLike, isProjectSource, resolveCall } from "./resolve.js";
+import { callee, oneLine } from "./names.js";
+import { type EntryPoint, entriesOf, type EntrySpecs } from "./entries.js";
 import { flowOf } from "./flow.js";
 import { standards } from "./standards.js";
 import { type CallSite, type FunctionSummary, nameOf, ownersOf, scopedCalls, summarizeFunction, type Transactions } from "./summaries.js";
@@ -53,6 +53,15 @@ export interface EntryPointRole {
   readonly middleware: readonly string[];
 }
 
+export interface Explanation {
+  readonly at: string;
+  readonly label: string;
+  readonly reads: boolean;
+  readonly writes: string | undefined;
+  readonly looksUp: string | undefined;
+  readonly passes: string | undefined;
+}
+
 export interface AnalysisOptions {
   readonly adapters: readonly Adapter[];
   /** The directory message paths are relative to: the tsconfig's, unless given. */
@@ -88,11 +97,15 @@ export interface Analysis {
   unauthorizedWrites(file: ts.SourceFile): Finding[];
   /** Request handlers that read a record by a key the request sends, with nothing reading the user asking. */
   unauthorizedReads(file: ts.SourceFile): Finding[];
+  /** Request handlers that load every row of a table. */
+  unboundedQueries(file: ts.SourceFile): Finding[];
   unknownIo(file: ts.SourceFile): Finding[];
   /** What the adapters make of each call a file makes into a package, in the order the calls start. */
   roles(file: ts.SourceFile): Role[];
   /** The request handlers a file registers or declares, as the adapters find them. */
   entryPoints(file: ts.SourceFile): EntryPointRole[];
+  /** For audits: each handler in a file, what it writes or looks up, and why the authorization rules pass it. */
+  explain(file: ts.SourceFile): Explanation[];
   stats(): ResolutionStats;
 }
 
@@ -131,8 +144,11 @@ export function analyze(program: ts.Program, options: AnalysisOptions): Analysis
 
 type Owner = FunctionLike | ts.SourceFile;
 
-/** What a call does that rules ask about: its effects, giving the user asking, or checking what they may do. */
-type Kind = EffectKind | "user" | "check";
+/**
+ * What a call does that rules ask about: its effects, giving the user asking, checking what they may do, or loading
+ * every row of a table.
+ */
+type Kind = EffectKind | "user" | "check" | "all";
 
 /**
  * The analysis reads code only as a question needs it: the loop calls of the file asked about, and the functions
@@ -165,6 +181,9 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
   const userMatchers = patternsOf("users");
   const checkMatchers = patternsOf("checks");
   const lookupMatchers = patternsOf("lookups");
+  const listMatchers = adapters.flatMap((adapter) =>
+    (adapter.lists ?? []).map((spec) => ({ packages: adapter.packages, pattern: glob(spec.on), spec })),
+  );
   const matching = (site: CallSite, list: readonly { packages: readonly string[]; pattern: RegExp }[]): boolean => {
     const target = packaged(site.resolution);
     return target !== undefined && list.some((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name));
@@ -178,6 +197,9 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     const count = ts.isCallExpression(site.node) || ts.isNewExpression(site.node) ? (site.node.arguments ?? []).length : 0;
     if (matching(site, userMatchers) || (name !== undefined && isUserCall(name, count))) kinds.push("user");
     if (matching(site, checkMatchers) || (name !== undefined && isCheckName(name))) kinds.push("check");
+    const target = packaged(site.resolution);
+    const list = target === undefined ? undefined : listMatchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name));
+    if (list !== undefined && ts.isCallExpression(site.node) && loadsEveryRow(site.node, list.spec)) kinds.push("all");
     return kinds;
   };
   const owners = new Map<EntryPointSpec, Adapter>();
@@ -206,7 +228,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     cached(summaryCache, owner, key, () => summarizeFunction(program, checker, owner, claims, transactions));
   const scoped = (file: ts.SourceFile): CallSite[] => cached(scopedCache, file, key, () => scopedCalls(program, checker, file, claims, transactions));
   const isProject = (file: ts.SourceFile): boolean =>
-    !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined;
+    isProjectSource(file) && claims(file.fileName) === undefined;
 
   /** Effects found for every function a finished question reached: complete, since that set holds all they call. */
   const final = new Map<Owner, Map<Kind, Trace>>();
@@ -292,24 +314,40 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
    * Whether a handler acts for the user asking: it reads them, gives them or its context to what it calls, reaches
    * code that gets them or checks what they may do, or runs after middleware or under a decorator that checks.
    */
-  const actsForUser = (entry: EntryPoint): boolean => {
+  const actsForUser = (entry: EntryPoint): boolean => whyActsForUser(entry) !== undefined;
+  const whyActsForUser = (entry: EntryPoint): string | undefined => {
+    const where = (node: ts.Node): string => {
+      const file = node.getSourceFile();
+      return `${relative(root, file.fileName)}:${String(file.getLineAndCharacterOfPosition(node.getStart()).line + 1)}`;
+    };
     const flow = flowOf(checker, entry.handler, entry.parameters, entry.decoratorsOf);
-    if (flow.readsUser) return true;
+    if (flow.readsUser !== undefined) return `reads the user asking: ${oneLine(flow.readsUser.getText())} (${where(flow.readsUser)})`;
     for (const site of summaryOf(entry.handler).calls) {
-      if ((ts.isCallExpression(site.node) || ts.isNewExpression(site.node)) && flow.carriesUser(site.node)) return true;
+      if ((ts.isCallExpression(site.node) || ts.isNewExpression(site.node)) && flow.carriesUser(site.node)) {
+        return `gives the user asking or its context to ${callee(site.named)}() (${where(site.node)})`;
+      }
       const found = effectsOfCall(site);
-      if (found.has("user") || found.has("check")) return true;
+      const user = found.get("user");
+      if (user !== undefined) return `gets the user asking through ${describe(user)}`;
+      const check = found.get("check");
+      if (check !== undefined) return `checks permissions through ${describe(check)}`;
     }
-    const checking = (middleware: Middleware): boolean =>
-      isCheckName(middleware.name) ||
-      (middleware.function !== undefined && (isCheckName(nameOf(middleware.function)) || effectsOf(middleware.function).has("check")));
-    if (entry.middleware.some(checking)) return true;
-    return entry.decorators.some((call) => {
+    for (const middleware of entry.middleware) {
+      if (isCheckName(middleware.name)) return `runs after ${middleware.name}`;
+      const function_ = middleware.function;
+      if (function_ === undefined) continue;
+      if (isCheckName(nameOf(function_))) return `runs after ${nameOf(function_)}`;
+      const check = effectsOf(function_).get("check");
+      if (check !== undefined) return `runs after middleware that checks permissions through ${describe(check)}`;
+    }
+    for (const call of entry.decorators) {
       const name = lastName(call.expression);
-      if (name !== undefined && isRequirementName(name)) return true;
+      if (name !== undefined && isRequirementName(name)) return `has @${name}()`;
       const site: CallSite = { owner: entry.handler, node: call, named: call.expression, resolution: resolveCall(program, checker, call, claims), loop: undefined, transaction: undefined };
-      return effectsOfCall(site).has("check");
-    });
+      const check = effectsOfCall(site).get("check");
+      if (check !== undefined) return `has @${callee(call.expression)}(), which checks permissions through ${describe(check)}`;
+    }
+    return undefined;
   };
 
   /**
@@ -379,6 +417,18 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         if (trace === undefined || actsForUser(entry)) continue;
         const way = fromEntry(entry, trace);
         findings.push(findingFor(entry, way, `${entry.label} writes to the database through ${describe(way)} with nothing checking that the user asking may`));
+      }
+      return findings;
+    },
+    unboundedQueries(file) {
+      const findings: Finding[] = [];
+      for (const entry of entries(file)) {
+        const trace = summaryOf(entry.handler)
+          .calls.map((site) => effectsOfCall(site).get("all"))
+          .find((found) => found !== undefined);
+        if (trace === undefined) continue;
+        const way = fromEntry(entry, trace);
+        findings.push(findingFor(entry, way, `${entry.label} loads every row through ${describe(way)}, so each request loads more as the table grows`));
       }
       return findings;
     },
@@ -459,6 +509,25 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         });
       }
       return findings;
+    },
+    explain(file) {
+      return entries(file).map((entry) => {
+        const write = summaryOf(entry.handler)
+          .calls.map((site) => effectsOfCall(site).get("db.write"))
+          .find((found) => found !== undefined);
+        const flow = flowOf(checker, entry.handler, entry.parameters, entry.decoratorsOf);
+        const lookup = lookupBy(entry.handler, flow, `${String(idOf(entry.handler))}:entry:${entry.label}`);
+        const node = entry.at ?? entry.handler;
+        const line = node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        return {
+          at: `${relative(root, node.getSourceFile().fileName)}:${String(line)}`,
+          label: entry.label,
+          reads: entry.reads,
+          writes: write === undefined ? undefined : describe(fromEntry(entry, write)),
+          looksUp: lookup === undefined ? undefined : describe(fromEntry(entry, lookup)),
+          passes: whyActsForUser(entry),
+        };
+      });
     },
     entryPoints(file) {
       return entries(file).map((entry) => ({
@@ -568,6 +637,40 @@ function packaged(resolution: CallSite["resolution"]): { package: string; name: 
   if (resolution.kind === "dependency") return resolution;
   if (resolution.kind === "lib") return { package: "typescript", name: resolution.name };
   return undefined;
+}
+
+/**
+ * Whether a read loads every row: given no options that bound it, or, for a chain, run with no call that does. Options
+ * or a chain that come from elsewhere may bound it, so they don't count.
+ */
+function loadsEveryRow(call: ts.CallExpression, spec: ListSpec): boolean {
+  const bounds = glob(spec.bounds);
+  if (spec.argument !== undefined) {
+    const argument = call.arguments[spec.argument];
+    if (argument === undefined) return true;
+    let options: ts.Expression = argument;
+    while (ts.isParenthesizedExpression(options) || ts.isAsExpression(options) || ts.isSatisfiesExpression(options)) options = options.expression;
+    if (!ts.isObjectLiteralExpression(options)) return false;
+    return options.properties.every((property) => {
+      if (ts.isSpreadAssignment(property)) return false;
+      const name = property.name;
+      return (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && !bounds.test(name.text);
+    });
+  }
+  const names: string[] = [];
+  let node: ts.Expression = call;
+  for (;;) {
+    const access = node.parent;
+    const next = access.parent;
+    if (!ts.isPropertyAccessExpression(access) || access.expression !== node || !ts.isCallExpression(next) || next.expression !== access) break;
+    names.push(access.name.text);
+    node = next;
+  }
+  if (names.some((name) => bounds.test(name))) return false;
+  if (spec.runs !== undefined) return names.length > 0 && glob(spec.runs).test(names[names.length - 1] ?? "");
+  let outer: ts.Node = node.parent;
+  while (ts.isParenthesizedExpression(outer)) outer = outer.parent;
+  return ts.isAwaitExpression(outer);
 }
 
 /** The last name of a callee: `update` for `prisma.user.update`, `load` for `load`. */

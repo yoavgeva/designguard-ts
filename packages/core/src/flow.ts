@@ -13,8 +13,8 @@ export type Holding = "input" | "context" | "user";
  * them. Values made from input, as `Number(req.params.id)` is, are input too.
  */
 export interface Flow {
-  /** Whether the function reads the user asking: takes them, or reads them from a context. */
-  readonly readsUser: boolean;
+  /** Where the function reads the user asking, taking them or reading them from a context, if it does. */
+  readonly readsUser: ts.Node | undefined;
   /** Whether a call gives the user asking, or a context holding them, to the code it calls. */
   carriesUser(call: ts.CallLikeExpression): boolean;
   /** Whether an expression holds what the request sent, or a value made from it. */
@@ -90,9 +90,9 @@ export function flowOf(
     return undefined;
   };
 
-  const seen = { user: false };
-  const note = (value: Value | undefined): void => {
-    if (holdingOf(value) === "user") seen.user = true;
+  const seen: { user: ts.Node | undefined } = { user: undefined };
+  const note = (value: Value | undefined, at: ts.Node): void => {
+    if (seen.user === undefined && holdingOf(value) === "user") seen.user = at;
   };
 
   const fromInput = (node: ts.Node): boolean => {
@@ -116,7 +116,7 @@ export function flowOf(
       const kept = value ?? (initializer !== undefined && fromInput(initializer) ? { derived: "input" as const } : undefined);
       if (kept !== undefined) {
         values.set(symbol, kept);
-        note(kept);
+        note(kept, name);
       }
       return;
     }
@@ -145,7 +145,7 @@ export function flowOf(
       bind(node.name, node.initializer === undefined ? undefined : valueOf(node.initializer), node.initializer);
       return;
     }
-    if (ts.isExpression(node) && stepOf(node) !== undefined) note(valueOf(node));
+    if (ts.isExpression(node) && stepOf(node) !== undefined) note(valueOf(node), node);
     ts.forEachChild(node, visit);
   };
   visit(function_.body);

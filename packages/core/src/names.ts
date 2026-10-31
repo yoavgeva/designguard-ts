@@ -22,6 +22,6 @@ export function callee(named: ts.Expression): string {
 }
 
 /** Text on one line: line breaks and the indentation after them go, other runs of spaces become one. */
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, "").replace(/\s+/g, " ");
 }
