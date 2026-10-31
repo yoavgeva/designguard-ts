@@ -2,12 +2,15 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import semver from "semver";
 import ts from "typescript";
-import type { Adapter, EffectKind } from "./adapter.js";
+import type { Adapter, EffectKind, EntryPointSpec } from "./adapter.js";
 import { glob } from "./patterns.js";
-import type { FunctionLike } from "./resolve.js";
+import { type FunctionLike, resolveCall } from "./resolve.js";
 import { callee } from "./names.js";
+import { type EntryPoint, entriesOf, type EntrySpecs } from "./entries.js";
+import { flowOf } from "./flow.js";
 import { standards } from "./standards.js";
 import { type CallSite, type FunctionSummary, nameOf, ownersOf, scopedCalls, summarizeFunction, type Transactions } from "./summaries.js";
+import { isCheckName, isUserCall } from "./words.js";
 
 /** A function in the project, by its file's absolute path and its name, as `nameOf` gives it. */
 export interface Place {
@@ -72,6 +75,10 @@ export interface ResolutionStats {
 export interface Analysis {
   queriesInLoops(file: ts.SourceFile): Finding[];
   ioInTransactions(file: ts.SourceFile): Finding[];
+  /** Request handlers that write with nothing reading the user asking or checking what they may do. */
+  unauthorizedWrites(file: ts.SourceFile): Finding[];
+  /** Request handlers that read a record by a key the request sends, with nothing reading the user asking. */
+  unauthorizedReads(file: ts.SourceFile): Finding[];
   unknownIo(file: ts.SourceFile): Finding[];
   /** What the adapters make of each call a file makes into a package, in the order the calls start. */
   roles(file: ts.SourceFile): Role[];
@@ -87,6 +94,7 @@ const cache = new WeakMap<ts.Program, Map<string, Analysis>>();
  */
 const summaryCache = new WeakMap<ts.Node, Map<string, FunctionSummary>>();
 const scopedCache = new WeakMap<ts.SourceFile, Map<string, CallSite[]>>();
+const entryCache = new WeakMap<ts.SourceFile, Map<string, EntryPoint[]>>();
 
 function cached<K extends object, V>(store: WeakMap<K, Map<string, V>>, node: K, key: string, make: () => V): V {
   let byKey = store.get(node);
@@ -112,6 +120,9 @@ export function analyze(program: ts.Program, options: AnalysisOptions): Analysis
 
 type Owner = FunctionLike | ts.SourceFile;
 
+/** What a call does that rules ask about: its effects, giving the user asking, or checking what they may do. */
+type Kind = EffectKind | "user" | "check";
+
 /**
  * The analysis reads code only as a question needs it: the loop calls of the file asked about, and the functions
  * those calls reach.
@@ -136,6 +147,36 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     const target = packaged(site.resolution);
     return target === undefined ? undefined : matchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name))?.kind;
   };
+  const patternsOf = (field: "users" | "checks" | "lookups") =>
+    adapters.flatMap((adapter) => (adapter[field] ?? []).map((on) => ({ packages: adapter.packages, pattern: glob(on) })));
+  const userMatchers = patternsOf("users");
+  const checkMatchers = patternsOf("checks");
+  const lookupMatchers = patternsOf("lookups");
+  const matching = (site: CallSite, list: readonly { packages: readonly string[]; pattern: RegExp }[]): boolean => {
+    const target = packaged(site.resolution);
+    return target !== undefined && list.some((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name));
+  };
+  /** A call's own kinds: its effect, and whether it gives the user asking or checks permissions, by adapters or names. */
+  const kindsOf = (site: CallSite): Kind[] => {
+    const kinds: Kind[] = [];
+    const effect = direct(site);
+    if (effect !== undefined) kinds.push(effect);
+    const name = site.node === site.named ? undefined : lastName(site.named);
+    const count = ts.isCallExpression(site.node) || ts.isNewExpression(site.node) ? (site.node.arguments ?? []).length : 0;
+    if (matching(site, userMatchers) || (name !== undefined && isUserCall(name, count))) kinds.push("user");
+    if (matching(site, checkMatchers) || (name !== undefined && isCheckName(name))) kinds.push("check");
+    return kinds;
+  };
+  const owners = new Map<EntryPointSpec, Adapter>();
+  for (const adapter of adapters) for (const spec of adapter.entryPoints ?? []) owners.set(spec, adapter);
+  const entrySpecs: EntrySpecs = {
+    specs: [...owners.keys()],
+    matches(spec, pattern, resolution) {
+      const target = packaged(resolution);
+      const adapter = owners.get(spec);
+      return target !== undefined && adapter !== undefined && adapter.packages.includes(target.package) && glob(pattern).test(target.name);
+    },
+  };
   const transactionMatchers = adapters.flatMap((adapter) =>
     (adapter.transactions ?? []).map((spec) => ({ packages: adapter.packages, pattern: glob(spec.on), body: spec.body, on: spec.on })),
   );
@@ -155,9 +196,9 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined;
 
   /** Effects found for every function a finished question reached: complete, since that set holds all they call. */
-  const final = new Map<Owner, Map<EffectKind, Trace>>();
+  const final = new Map<Owner, Map<Kind, Trace>>();
 
-  const effectsOf = (owner: Owner): Map<EffectKind, Trace> => {
+  const effectsOf = (owner: Owner): Map<Kind, Trace> => {
     const known = final.get(owner);
     if (known !== undefined) return known;
     // The functions it reaches that no earlier question did, then their effects to a fixpoint over just those.
@@ -175,12 +216,11 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         }
       }
     }
-    const working = new Map<Owner, Map<EffectKind, Trace>>();
+    const working = new Map<Owner, Map<Kind, Trace>>();
     for (const function_ of reached) {
-      const own = new Map<EffectKind, Trace>();
+      const own = new Map<Kind, Trace>();
       for (const site of summaryOf(function_).calls) {
-        const kind = direct(site);
-        if (kind !== undefined && !own.has(kind)) own.set(kind, { site, next: undefined });
+        for (const kind of kindsOf(site)) if (!own.has(kind)) own.set(kind, { site, next: undefined });
       }
       working.set(function_, own);
     }
@@ -204,14 +244,13 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       }
     }
     for (const [function_, effects] of working) final.set(function_, effects);
-    return final.get(owner) ?? new Map<EffectKind, Trace>();
+    return final.get(owner) ?? new Map<Kind, Trace>();
   };
 
   /** The effects a call has: its own, or those of the project functions it reaches, with the way there. */
-  const effectsOfCall = (site: CallSite): Map<EffectKind, Trace> => {
-    const found = new Map<EffectKind, Trace>();
-    const own = direct(site);
-    if (own !== undefined) found.set(own, { site, next: undefined });
+  const effectsOfCall = (site: CallSite): Map<Kind, Trace> => {
+    const found = new Map<Kind, Trace>();
+    for (const kind of kindsOf(site)) found.set(kind, { site, next: undefined });
     if (site.resolution.kind === "project") {
       for (const target of site.resolution.targets) {
         if (!isProject(target.getSourceFile())) continue;
@@ -233,7 +272,111 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     return `${first}, which reaches ${callee(last.site.named)}() (${relative(root, file.fileName)}:${String(line)})`;
   };
 
+  const entries = (file: ts.SourceFile): EntryPoint[] =>
+    cached(entryCache, file, key, () => entriesOf(program, checker, file, entrySpecs, claims));
+
+  /**
+   * Whether a handler acts for the user asking: it reads them, gives them or its context to what it calls, reaches
+   * code that gets them or checks what they may do, or runs after middleware or under a decorator that checks.
+   */
+  const actsForUser = (entry: EntryPoint): boolean => {
+    const flow = flowOf(checker, entry.handler, entry.parameters, entry.decoratorsOf);
+    if (flow.readsUser) return true;
+    for (const site of summaryOf(entry.handler).calls) {
+      if ((ts.isCallExpression(site.node) || ts.isNewExpression(site.node)) && flow.carriesUser(site.node)) return true;
+      const found = effectsOfCall(site);
+      if (found.has("user") || found.has("check")) return true;
+    }
+    if (entry.middleware.some((function_) => isCheckName(nameOf(function_)) || effectsOf(function_).has("check"))) return true;
+    return entry.decorators.some((call) => {
+      const site: CallSite = { owner: entry.handler, node: call, named: call.expression, resolution: resolveCall(program, checker, call, claims), loop: undefined, transaction: undefined };
+      return effectsOfCall(site).has("check");
+    });
+  };
+
+  /**
+   * The way from a handler to what it does: from the call in it that leads there, or, for a handler written elsewhere,
+   * from the argument that names it where it's registered.
+   */
+  const fromEntry = (entry: EntryPoint, trace: Trace): Trace =>
+    entry.at === undefined ? trace : { site: { ...trace.site, node: entry.at as ts.Expression, named: entry.at as ts.Expression }, next: trace };
+
+  /** A finding about a handler, reported where its way starts. */
+  const findingFor = (entry: EntryPoint, trace: Trace, message: string): Finding => ({
+    node: trace.site.node,
+    message,
+    at: placeOf(entry.handler),
+    reaching: reachingOf(trace),
+  });
+
+  const ids = new Map<FunctionLike, number>();
+  const idOf = (function_: FunctionLike): number => {
+    let id = ids.get(function_);
+    if (id === undefined) {
+      id = ids.size;
+      ids.set(function_, id);
+    }
+    return id;
+  };
+
+  /**
+   * The first lookup a function makes by a key from the input `flow` tells of, itself or through the project functions
+   * it gives that input to. `key` names the function and its input, for the cache.
+   */
+  const lookups = new Map<string, Trace | null>();
+  const lookupBy = (function_: FunctionLike, flow: ReturnType<typeof flowOf>, key: string): Trace | undefined => {
+    const known = lookups.get(key);
+    if (known !== undefined) return known ?? undefined;
+    lookups.set(key, null);
+    let found: Trace | undefined;
+    for (const site of summaryOf(function_).calls) {
+      if (!(ts.isCallExpression(site.node) || ts.isNewExpression(site.node))) continue;
+      if (matching(site, lookupMatchers) && flow.fromInput(site.node)) found = { site, next: undefined };
+      else if (site.resolution.kind === "project") {
+        const inputs = flow.inputArguments(site.node);
+        if (inputs.length === 0) continue;
+        for (const target of site.resolution.targets) {
+          if (!isProject(target.getSourceFile())) continue;
+          const inner = flowOf(checker, target, inputs.map((at) => ({ at, holds: "input" as const })));
+          const next = lookupBy(target, inner, `${String(idOf(target))}:${inputs.join(",")}`);
+          if (next !== undefined) {
+            found = { site, next };
+            break;
+          }
+        }
+      }
+      if (found !== undefined) break;
+    }
+    lookups.set(key, found ?? null);
+    return found;
+  };
   return {
+    unauthorizedWrites(file) {
+      const findings: Finding[] = [];
+      for (const entry of entries(file)) {
+        if (entry.reads) continue;
+        const trace = summaryOf(entry.handler)
+          .calls.map((site) => effectsOfCall(site).get("db.write"))
+          .find((found) => found !== undefined);
+        if (trace === undefined || actsForUser(entry)) continue;
+        const way = fromEntry(entry, trace);
+        findings.push(findingFor(entry, way, `${entry.label} writes to the database through ${describe(way)} with nothing checking that the user asking may`));
+      }
+      return findings;
+    },
+    unauthorizedReads(file) {
+      const findings: Finding[] = [];
+      for (const entry of entries(file)) {
+        const flow = flowOf(checker, entry.handler, entry.parameters, entry.decoratorsOf);
+        const trace = lookupBy(entry.handler, flow, `${String(idOf(entry.handler))}:entry:${entry.label}`);
+        if (trace === undefined || actsForUser(entry)) continue;
+        const way = fromEntry(entry, trace);
+        findings.push(
+          findingFor(entry, way, `${entry.label} reads a record by a key the request sends through ${describe(way)}: nothing checks that the user asking may see it`),
+        );
+      }
+      return findings;
+    },
     queriesInLoops(file) {
       const findings: Finding[] = [];
       for (const site of scoped(file)) {
@@ -399,6 +542,12 @@ function packaged(resolution: CallSite["resolution"]): { package: string; name: 
   if (resolution.kind === "dependency") return resolution;
   if (resolution.kind === "lib") return { package: "typescript", name: resolution.name };
   return undefined;
+}
+
+/** The last name of a callee: `update` for `prisma.user.update`, `load` for `load`. */
+function lastName(named: ts.Expression): string | undefined {
+  if (ts.isPropertyAccessExpression(named)) return named.name.text;
+  return ts.isIdentifier(named) ? named.text : undefined;
 }
 
 /** The names a pattern's last segment matches, as `$transaction` for `PrismaClient.$transaction`. */

@@ -28,6 +28,54 @@ export interface TransactionSpec {
 }
 
 /**
+ * Where requests come in: a call that registers handlers, a decorator on a method, a directive or a file's exports.
+ *
+ * - `call`: as Express's `IRouter.post`; `handler` is the argument that handles the request, `"last"` unless given.
+ *   Function arguments before it are middleware, and so are those of the calls before it in a chain that match
+ *   `middleware`, as tRPC's `ProcedureBuilder.use` in `t.procedure.use(isAdmin).mutation(...)`.
+ * - `decorator`: on a method, as NestJS's `Post`; the method handles the request.
+ * - `directive`: a function in a file that starts with it, or whose body does, as React's `"use server"`.
+ * - `exports`: a file's exported functions with these names, whose first parameter's type, or a type it extends,
+ *   matches `takes`, as the `POST(request: Request)` of a route handler.
+ */
+export interface EntryPointSpec {
+  readonly call?: string;
+  readonly handler?: number | "last";
+  readonly middleware?: string;
+  readonly decorator?: string;
+  readonly directive?: string;
+  readonly exports?: string;
+  readonly takes?: string;
+  /** Requests that only ask to read, as a GET does: what they write is the server's bookkeeping, not a change asked for. */
+  readonly reads?: boolean;
+  readonly parameters?: readonly ParameterSpec[];
+}
+
+/**
+ * What a handler's parameter holds: what the request sends, the user asking, or a context the user asking can be read
+ * from, as Express's `req` is. Without `at` or `decorator`, every parameter.
+ */
+export interface ParameterSpec {
+  /** The parameter's position. */
+  readonly at?: number;
+  /** A pattern over the name of a decorator the parameter has, as NestJS's `Body`. */
+  readonly decorator?: string;
+  /** Where in it, as `["input"]` for tRPC's `opts.input`; a name ending in `()` is a method's result, as `json()`. */
+  readonly path?: readonly string[];
+  readonly holds: "input" | "context" | "user";
+}
+
+/**
+ * Where a write takes the data it saves, as Prisma's `update({ data })`: the argument at `argument`, or, with
+ * `property`, that property of it.
+ */
+export interface WriteSpec {
+  readonly on: string;
+  readonly argument: number;
+  readonly property?: string;
+}
+
+/**
  * What designguard knows about a library: data, so ESLint can cache and print the configuration that holds it.
  * `packages` are the npm packages whose declarations the patterns match.
  */
@@ -46,6 +94,14 @@ export interface Adapter {
   readonly files?: readonly string[];
   readonly effects?: readonly EffectSpec[];
   readonly transactions?: readonly TransactionSpec[];
+  readonly entryPoints?: readonly EntryPointSpec[];
+  /** Calls that give the user asking, as Auth.js's `getServerSession`. */
+  readonly users?: readonly string[];
+  /** Calls and decorators that check what the user asking may do, as NestJS's `UseGuards`. */
+  readonly checks?: readonly string[];
+  /** Reads of one record by its key, as Prisma's `findUnique`. */
+  readonly lookups?: readonly string[];
+  readonly writes?: readonly WriteSpec[];
 }
 
 export function defineAdapter<const A extends Adapter>(adapter: A): A {
