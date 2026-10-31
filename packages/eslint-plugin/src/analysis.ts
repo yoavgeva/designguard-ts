@@ -25,7 +25,7 @@ export function analysisFor(context: Readonly<TSESLint.RuleContext<string, reado
   const analysis = analyze(program, adaptersOf(context.settings));
   // DESIGNGUARD_STATS names a file to append one line of resolution statistics to per program analyzed.
   const statsFile = process.env["DESIGNGUARD_STATS"];
-  if (statsFile !== undefined && !reported.has(program)) {
+  if (statsFile !== undefined && statsFile !== "" && !reported.has(program)) {
     reported.add(program);
     appendFileSync(statsFile, `${JSON.stringify({ ...analysis.stats(), milliseconds: Math.round(performance.now() - started) })}\n`);
   }
