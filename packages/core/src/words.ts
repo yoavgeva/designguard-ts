@@ -1,0 +1,94 @@
+/** The words of a name, lower case: `getCurrentUser` is `get`, `current`, `user`; `user_id` is `user`, `id`. */
+export function wordsOf(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word !== "")
+    .map((word) => word.toLowerCase());
+}
+
+/** Words that name the user asking, or what they're signed in with. */
+const USER = new Set(["user", "session", "auth", "viewer", "actor", "principal", "identity", "member", "account", "me", "whoami", "claims", "authentication", "authorization", "jwt"]);
+
+/** Words that say a call is about the user asking, rather than any user: `getCurrentUser`, `whoami`. */
+const ASKING = new Set(["current", "me", "my", "whoami", "logged", "signed", "authenticated"]);
+
+/** What a call that fetches the user asking with no arguments starts with: `getSession()`, `requireUser()`. */
+const FETCHING = new Set(["get", "require", "ensure", "assert", "validate", "verify", "check", "load", "read", "fetch", "use"]);
+
+/** Words that name a secret a request can prove itself with: a token in a link, a webhook's signature, an API key. */
+const SECRET = new Set(["token", "secret", "signature", "otp", "nonce", "hmac", "passcode", "password", "authorization"]);
+
+/** Whether a name names a secret, as `token`, `x-signature` and `apiKey` do. */
+export function isSecretName(name: string): boolean {
+  const words = wordsOf(name);
+  return words.some((word) => SECRET.has(word)) || (words.includes("api") && words.includes("key"));
+}
+
+/** Words that name what the user asking acts within, which a request's context holds for them, as `ctx.workspace`. */
+const SCOPE = new Set(["workspace", "tenant", "organization", "org", "team", "scope"]);
+
+/**
+ * Whether a property or variable name names the user asking, or the workspace or team they act within, when it's
+ * read from a request's context.
+ */
+export function isUserName(name: string): boolean {
+  return wordsOf(name).some((word) => USER.has(word) || SCOPE.has(word));
+}
+
+/**
+ * Whether a call by this name gives the user asking: one named for the user asking, as `getCurrentUser()` is, or
+ * fetching a user or session with nothing to say whose, as `auth()`, `getSession()` and `requireUser()` do.
+ */
+export function isUserCall(name: string, argumentCount: number): boolean {
+  const words = wordsOf(name);
+  if (!words.some((word) => USER.has(word))) return false;
+  if (words.some((word) => ASKING.has(word))) return true;
+  if (argumentCount > 0) return false;
+  return words.length === 1 || FETCHING.has(words[0] ?? "");
+}
+
+/** Words that name a permission check wherever they are in a name: `assertCan`, `authorize`, `checkPermission`. */
+const CHECKING = new Set([
+  "can",
+  "cannot",
+  "authorize",
+  "authorized",
+  "authorization",
+  "permission",
+  "permissions",
+  "permitted",
+  "permit",
+  "policy",
+  "policies",
+  "ability",
+  "abilities",
+  "forbid",
+  "forbidden",
+  "unauthorized",
+  "allowed",
+  "allow",
+  "acl",
+  "rbac",
+]);
+
+/** Words that name a check when a name starts by asking: `isAdmin`, `requireAccess`, `hasRole`, `checkOwnership`. */
+const CHECKED = new Set(["access", "owner", "owns", "ownership", "role", "roles", "admin", "member", "membership", "staff", "superuser", "scope", "scopes"]);
+const ASKS = new Set(["has", "check", "require", "requires", "assert", "ensure", "verify", "validate", "is", "must", "can", "only", "with"]);
+
+/** Whether a function, method or decorator by this name checks what the user asking may do. */
+export function isCheckName(name: string): boolean {
+  const words = wordsOf(name);
+  if (words.some((word) => CHECKING.has(word))) return true;
+  return ASKS.has(words[0] ?? "") && words.slice(1).some((word) => CHECKED.has(word));
+}
+
+/**
+ * Whether a decorator by this name states who may call what it's on, as `@Roles("admin")`, `@Permissions(...)` and
+ * `@Public()` do: a guard reads what it records.
+ */
+export function isRequirementName(name: string): boolean {
+  const words = wordsOf(name);
+  return isCheckName(name) || words.some((word) => CHECKED.has(word) || word === "public" || word === "authenticated");
+}

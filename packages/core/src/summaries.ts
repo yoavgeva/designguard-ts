@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { callee } from "./names.js";
-import { type FunctionLike, type Resolution, resolveCall } from "./resolve.js";
+import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from "./resolve.js";
 
 /**
  * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
@@ -206,7 +206,7 @@ function isFunctionWithBody(node: ts.Node): node is FunctionLike {
 }
 
 /** A function written as an argument of a call: it runs as part of the call, so its calls count as the caller's. */
-function isInlineCallback(node: FunctionLike): boolean {
+export function isInlineCallback(node: FunctionLike): boolean {
   const parent = node.parent;
   return (
     (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
@@ -241,6 +241,6 @@ function passedFunction(
       : undefined;
   if (target === undefined) return undefined;
   const file = target.getSourceFile();
-  if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file) || claims(file.fileName) !== undefined) return undefined;
+  if (!isProjectSource(file) || claims(file.fileName) !== undefined) return undefined;
   return { kind: "project", targets: [target] };
 }

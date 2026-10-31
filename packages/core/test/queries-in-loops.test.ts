@@ -124,4 +124,29 @@ describe("queriesInLoops", () => {
       }),
     ).toEqual([]);
   });
+
+  it("names the shortest way to a query, ties by the first call, whatever was asked before", () => {
+    expect(
+      findings({
+        "src/lib.ts": `
+          import { PrismaClient } from "@prisma/client";
+          const prisma = new PrismaClient();
+          export async function c() { return prisma.user.findMany(); }
+          export async function a() { return c(); }
+          export async function b() { return prisma.user.findUnique({ where: { id: "1" } }); }
+          export async function outer() { await a(); await b(); }`,
+        "src/main.ts": `
+          import { a, outer } from "./lib.js";
+          export async function first(ids: string[]) {
+            for (const id of ids) await a();
+          }
+          export async function second(ids: string[]) {
+            for (const id of ids) await outer();
+          }`,
+      }),
+    ).toEqual([
+      "4: queries the database once per item: the for…of loop calls a(), which reaches prisma.user.findMany() (src/lib.ts:4)",
+      "7: queries the database once per item: the for…of loop calls outer(), which reaches prisma.user.findUnique() (src/lib.ts:6)",
+    ]);
+  });
 });

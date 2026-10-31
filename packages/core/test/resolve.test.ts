@@ -1,11 +1,11 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { resolveCall } from "../src/resolve.js";
-import { prismaStub, project } from "./fixture.js";
+import { prismaStub, project, stubPackage } from "./fixture.js";
 
 /** Every call in `src/main.ts`, by its callee's text, resolved. */
-function resolutions(files: Record<string, string>) {
-  const { program } = project(files);
+function resolutions(files: Record<string, string>, links: Record<string, string> = {}) {
+  const { program } = project(files, links);
   const checker = program.getTypeChecker();
   const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
   if (main === undefined) throw new Error("no src/main.ts");
@@ -84,5 +84,46 @@ describe("resolveCall", () => {
       "[1, 2].map": { kind: "lib", },
       "untyped.load": { kind: "unresolved" },
     });
+  });
+
+  it("names a call through a property or variable of a function type by the property or variable", () => {
+    expect(
+      resolutions({
+        ...stubPackage(
+          "router",
+          "1.0.0",
+          `export interface RouterMatcher { (path: string, ...handlers: ((request: unknown) => void)[]): void }
+           export interface Router { post: RouterMatcher; get: (path: string) => void }
+           export declare const Post: (path?: string) => MethodDecorator;
+           export declare function router(): Router;`,
+        ),
+        "src/main.ts": `
+          import { router, Post } from "router";
+          const app = router();
+          app.post("/orders", () => {});
+          app.get("/orders");
+          Post("/orders");`,
+      }),
+    ).toEqual({
+      router: { kind: "dependency", package: "router", name: "router" },
+      "app.post": { kind: "dependency", package: "router", name: "Router.post" },
+      "app.get": { kind: "dependency", package: "router", name: "Router.get" },
+      Post: { kind: "dependency", package: "router", name: "Post" },
+    });
+  });
+
+  it("follows calls into a workspace package linked into node_modules as the project's own code", () => {
+    expect(
+      resolutions(
+        {
+          "packages/services/package.json": JSON.stringify({ name: "@acme/services", type: "module", exports: { ".": "./src/index.ts" } }),
+          "packages/services/src/index.ts": "export function createKey(name: string) { return name; }",
+          "src/main.ts": `
+            import { createKey } from "@acme/services";
+            createKey("ci");`,
+        },
+        { "node_modules/@acme/services": "packages/services" },
+      ),
+    ).toEqual({ createKey: { kind: "project", targets: ["index.ts#createKey"] } });
   });
 });

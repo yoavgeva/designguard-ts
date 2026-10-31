@@ -27,11 +27,69 @@ export interface Sample {
  * patterns would have to match.
  */
 export function rolesOf(adapter: Adapter, sample: Sample): string[] {
+  return withSample(sample, (program, file) =>
+    analyze(program, { adapters: [adapter], standards: false })
+      .roles(file)
+      .map((role) => {
+        const what =
+          role.off !== undefined
+            ? `, off: ${role.off}`
+            : `${role.effect === undefined ? "" : `, ${role.effect}`}${role.transaction === undefined ? "" : `, transaction running its argument ${String(role.transaction)}`}`;
+        return `${role.callee}(): ${role.package} ${role.name}${what}`;
+      }),
+  );
+}
+
+/**
+ * The request handlers an adapter finds in a sample, as `3: the POST /orders handler, after requireUser`, with
+ * `(reads)` for one that only asks to read.
+ */
+export function entryPointsOf(adapter: Adapter, sample: Sample): string[] {
+  return withSample(sample, (program, file) =>
+    analyze(program, { adapters: [adapter], standards: false })
+      .entryPoints(file)
+      .map((entry) => {
+        const after = entry.middleware.length === 0 ? "" : `, after ${entry.middleware.map((name) => (name === "" ? "inline middleware" : name)).join(", ")}`;
+        const built = entry.builders.length === 0 ? "" : `, built from ${entry.builders.join(", ")}`;
+        return `${String(lineOf(entry.node))}: ${entry.label}${entry.reads ? " (reads)" : ""}${after}${built}`;
+      }),
+  );
+}
+
+/**
+ * What the rules find in a sample with these adapters and the standard one, as a project would have them, as
+ * `5: unauthorizedWrites: the POST /orders handler ...`.
+ */
+export function findingsOf(adapters: readonly Adapter[], sample: Sample): string[] {
+  return withSample(sample, (program, file) => {
+    const analysis = analyze(program, { adapters });
+    const rules = ["queriesInLoops", "ioInTransactions", "unauthorizedWrites", "unauthorizedReads", "unboundedQueries"] as const;
+    return rules
+      .flatMap((rule) => analysis[rule](file).map((finding) => ({ rule, finding })))
+      .sort((first, second) => first.finding.node.getStart() - second.finding.node.getStart())
+      .map(({ rule, finding }) => `${String(lineOf(finding.node))}: ${rule}: ${finding.message}`);
+  });
+}
+
+function lineOf(node: ts.Node): number {
+  return node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1;
+}
+
+/** Runs `use` on a sample written to a temporary project, with `sample.ts` as the file asked about. */
+function withSample<T>(sample: Sample, use: (program: ts.Program, file: ts.SourceFile) => T): T {
   const root = mkdtempSync(join(tmpdir(), "designguard-adapter-"));
   try {
     const files: Record<string, string> = {
       "tsconfig.json": JSON.stringify({
-        compilerOptions: { strict: true, target: "ES2023", module: "NodeNext", moduleResolution: "NodeNext", skipLibCheck: true, types: [] },
+        compilerOptions: {
+          strict: true,
+          target: "ES2023",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          skipLibCheck: true,
+          experimentalDecorators: true,
+          types: [],
+        },
         include: ["sample.ts"],
       }),
       "package.json": JSON.stringify({ name: "sample", type: "module" }),
@@ -52,15 +110,7 @@ export function rolesOf(adapter: Adapter, sample: Sample): string[] {
     const program = ts.createProgram(config.fileNames, config.options);
     const file = program.getSourceFile(join(root, "sample.ts"));
     if (file === undefined) throw new Error("the sample didn't compile");
-    return analyze(program, { adapters: [adapter], standards: false })
-      .roles(file)
-      .map((role) => {
-        const what =
-          role.off !== undefined
-            ? `, off: ${role.off}`
-            : `${role.effect === undefined ? "" : `, ${role.effect}`}${role.transaction === undefined ? "" : `, transaction running its argument ${String(role.transaction)}`}`;
-        return `${role.callee}(): ${role.package} ${role.name}${what}`;
-      });
+    return use(program, file);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

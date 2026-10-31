@@ -13,4 +13,18 @@ export default defineAdapter({
   ],
   // db.transaction().execute(async (trx) => ...)
   transactions: [{ on: "TransactionBuilder.execute", body: 0 }],
+  lookups: ["SelectQueryBuilder.{executeTakeFirst,executeTakeFirstOrThrow}"],
+  // selectFrom() starts a query that loads every row when it's executed with nothing filtering, limiting or
+  // aggregating it, as eb.fn.countAll() does.
+  lists: [
+    {
+      on: "{QueryCreator,Kysely,Transaction}.selectFrom",
+      // $if() and $call() may add a filter; a query over a with() reads what the common table expression selected.
+      bounds: "{where,whereRef,limit,top,groupBy,$if,$call,with,withRecursive}",
+      runs: "{execute,stream}",
+      aggregates: "{count,countAll,sum,avg,min,max,agg}",
+    },
+  ],
+  writes: [{ on: "{InsertQueryBuilder.values,UpdateQueryBuilder.set}", argument: 0 }],
+  locks: "{forUpdate,forNoKeyUpdate,forShare,forKeyShare}",
 });

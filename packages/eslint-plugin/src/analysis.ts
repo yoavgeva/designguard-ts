@@ -41,8 +41,16 @@ export function analysisFor(context: Readonly<TSESLint.RuleContext<string, reado
     reported.add(program);
     appendFileSync(statsFile, `${JSON.stringify({ ...analysis.stats(), milliseconds: Math.round(performance.now() - started) })}\n`);
   }
+  // DESIGNGUARD_EXPLAIN names a file to append, for each file linted, why each request handler in it passes or not.
+  const explainFile = process.env.DESIGNGUARD_EXPLAIN;
+  if (explainFile !== undefined && explainFile !== "" && !explained.has(file)) {
+    explained.add(file);
+    for (const entry of analysis.explain(file)) appendFileSync(explainFile, `${JSON.stringify(entry)}\n`);
+  }
   return { analysis, file, root };
 }
+
+const explained = new WeakSet<ts.SourceFile>();
 
 /** Reports the findings the rule's options let through. */
 export function reportAll(
