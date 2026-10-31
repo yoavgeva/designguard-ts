@@ -25,4 +25,5 @@ export default defineAdapter({
     },
   ],
   writes: [{ on: "{InsertQueryBuilder.values,UpdateQueryBuilder.set}", argument: 0 }],
+  locks: "{forUpdate,forNoKeyUpdate,forShare,forKeyShare}",
 });

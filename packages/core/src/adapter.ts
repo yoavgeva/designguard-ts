@@ -126,6 +126,13 @@ export interface Adapter {
   readonly lookups?: readonly string[];
   readonly writes?: readonly WriteSpec[];
   readonly lists?: readonly ListSpec[];
+  /**
+   * A pattern over the names of a read's options, or of the calls in its chain, that lock the rows it reads until the
+   * transaction ends, as TypeORM's `lock` and Kysely's `forUpdate()` do.
+   */
+  readonly locks?: string;
+  /** A pattern over the names of decorators that make a property an entity's version, as TypeORM's `VersionColumn`. */
+  readonly versioned?: string;
 }
 
 export function defineAdapter<const A extends Adapter>(adapter: A): A {

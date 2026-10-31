@@ -19,4 +19,6 @@ export default defineAdapter({
     { on: "RelationalQueryBuilder.findMany", argument: 0, bounds: "{where,limit}" },
   ],
   writes: [{ on: "{*InsertBuilder.values,*UpdateBuilder.set}", argument: 0 }],
+  // select().from(t).for("update")
+  locks: "for",
 });

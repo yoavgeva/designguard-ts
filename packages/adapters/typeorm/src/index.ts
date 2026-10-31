@@ -38,4 +38,7 @@ export default defineAdapter({
     { on: "{Repository,TreeRepository,MongoRepository}.update", argument: 1 },
     { on: "{InsertQueryBuilder.values,UpdateQueryBuilder.set}", argument: 0 },
   ],
+  // find options' lock, a query builder's setLock(), and @VersionColumn(), which makes a save over a newer row fail.
+  locks: "{lock,setLock}",
+  versioned: "VersionColumn",
 });

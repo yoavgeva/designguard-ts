@@ -206,7 +206,7 @@ function isFunctionWithBody(node: ts.Node): node is FunctionLike {
 }
 
 /** A function written as an argument of a call: it runs as part of the call, so its calls count as the caller's. */
-function isInlineCallback(node: FunctionLike): boolean {
+export function isInlineCallback(node: FunctionLike): boolean {
   const parent = node.parent;
   return (
     (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&

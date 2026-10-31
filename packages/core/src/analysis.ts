@@ -9,7 +9,16 @@ import { callee, oneLine } from "./names.js";
 import { type EntryPoint, entriesOf, type EntrySpecs } from "./entries.js";
 import { flowOf } from "./flow.js";
 import { standards } from "./standards.js";
-import { type CallSite, type FunctionSummary, nameOf, ownersOf, scopedCalls, summarizeFunction, type Transactions } from "./summaries.js";
+import {
+  type CallSite,
+  type FunctionSummary,
+  isInlineCallback,
+  nameOf,
+  ownersOf,
+  scopedCalls,
+  summarizeFunction,
+  type Transactions,
+} from "./summaries.js";
 import { isCheckName, isRequirementName, isUserCall } from "./words.js";
 
 /** A function in the project, by its file's absolute path and its name, as `nameOf` gives it. */
@@ -101,6 +110,8 @@ export interface Analysis {
   unboundedQueries(file: ts.SourceFile): Finding[];
   /** Request handlers that save what the request sends as it is, when it has a property the request shouldn't set. */
   massAssignments(file: ts.SourceFile): Finding[];
+  /** Writes of a value computed from one read before, which a change made between them is lost to. */
+  lostUpdates(file: ts.SourceFile): Finding[];
   unknownIo(file: ts.SourceFile): Finding[];
   /** What the adapters make of each call a file makes into a package, in the order the calls start. */
   roles(file: ts.SourceFile): Role[];
@@ -478,7 +489,122 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     return found;
   };
 
+  const locks = adapters.flatMap((adapter) => (adapter.locks === undefined ? [] : [glob(adapter.locks)]));
+  const versioned = adapters.flatMap((adapter) => (adapter.versioned === undefined ? [] : [glob(adapter.versioned)]));
+  const where = (node: ts.Node): string => {
+    const source = node.getSourceFile();
+    return `${relative(root, source.fileName)}:${String(source.getLineAndCharacterOfPosition(node.getStart()).line + 1)}`;
+  };
+
+  /** Whether a read locks what it reads: an option or a call of its chain a `locks` pattern names. */
+  const locked = (call: ts.Node): boolean => {
+    let top: ts.Node = call;
+    while (ts.isPropertyAccessExpression(top.parent) || (ts.isCallExpression(top.parent) && top.parent.expression === top)) top = top.parent;
+    let found = false;
+    const visit = (node: ts.Node): void => {
+      if (found) return;
+      const name =
+        ts.isPropertyAccessExpression(node) ? node.name.text : ts.isPropertyAssignment(node) && ts.isIdentifier(node.name) ? node.name.text : undefined;
+      if (name !== undefined && locks.some((pattern) => pattern.test(name))) found = true;
+      else ts.forEachChild(node, visit);
+    };
+    visit(top);
+    return found;
+  };
+
+  /** Whether a value's entity has a version column, which makes a write over a newer one fail. */
+  const hasVersion = (symbol: ts.Symbol, at: ts.Node): boolean => {
+    const type = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(symbol, at));
+    return type.getApparentProperties().some((property) =>
+      (property.declarations ?? []).some((declaration) =>
+        (ts.canHaveDecorators(declaration) ? (ts.getDecorators(declaration) ?? []) : []).some((decorator) => {
+          const expression = ts.isCallExpression(decorator.expression) ? decorator.expression.expression : decorator.expression;
+          const name = lastName(expression);
+          return name !== undefined && versioned.some((pattern) => pattern.test(name));
+        }),
+      ),
+    );
+  };
+
   return {
+    lostUpdates(file) {
+      const findings: Finding[] = [];
+      for (const owner of ownersOf(file)) {
+        const sites = new Map<ts.Node, CallSite>();
+        for (const site of summaryOf(owner).calls) sites.set(site.node, site);
+        const reads = new Map<ts.Symbol, Trace>();
+        const changes = new Map<ts.Symbol, { name: string; at: number }[]>();
+        const writes: { site: CallSite; spec: WriteSpec }[] = [];
+        const symbolOf = (node: ts.Expression): ts.Symbol | undefined => {
+          const expression = unwrapped(node);
+          return ts.isIdentifier(expression) ? checker.getSymbolAtLocation(expression) : undefined;
+        };
+        const visit = (node: ts.Node): void => {
+          if (node !== owner && ts.isFunctionLike(node) && (node as ts.FunctionLikeDeclaration).body !== undefined && !isInlineCallback(node as FunctionLike)) return;
+          if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
+            const call = unwrapped(node.initializer);
+            const site = ts.isCallExpression(call) ? sites.get(call) : undefined;
+            const read = site === undefined ? undefined : effectsOfCall(site).get("db.read");
+            const first = ts.isArrayBindingPattern(node.name) ? node.name.elements[0] : undefined;
+            const name = ts.isIdentifier(node.name) ? node.name : first !== undefined && ts.isBindingElement(first) && ts.isIdentifier(first.name) ? first.name : undefined;
+            const symbol = name === undefined ? undefined : checker.getSymbolAtLocation(name);
+            if (read !== undefined && symbol !== undefined) reads.set(symbol, read);
+          }
+          const changed = changeOf(checker, node);
+          if (changed !== undefined) {
+            const symbol = symbolOf(changed.target);
+            if (symbol !== undefined) changes.set(symbol, [...(changes.get(symbol) ?? []), { name: changed.name, at: node.getStart() }]);
+          }
+          if (ts.isCallExpression(node)) {
+            const site = sites.get(node);
+            const target = site === undefined ? undefined : packaged(site.resolution);
+            const spec = target === undefined ? undefined : writeMatchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name))?.spec;
+            if (site !== undefined && spec !== undefined) writes.push({ site, spec });
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(ts.isSourceFile(owner) ? owner : owner.body);
+        for (const { site, spec } of writes) {
+          const call = site.node as ts.CallExpression;
+          const lost: { symbol: ts.Symbol; name: string } | undefined = dataOf(call, spec)
+            .flatMap((data) => {
+              const expression = unwrapped(data);
+              if (ts.isObjectLiteralExpression(expression)) {
+                return expression.properties.flatMap((property) => {
+                  if (!ts.isPropertyAssignment(property) || !(ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name))) return [];
+                  const name = property.name.text;
+                  return [...reads.keys()].filter((symbol) => computedFrom(checker, property.initializer, symbol, name)).map((symbol) => ({ symbol, name }));
+                });
+              }
+              const symbol = symbolOf(expression);
+              const change = symbol === undefined ? undefined : changes.get(symbol)?.find((each) => each.at < call.getStart());
+              return symbol !== undefined && reads.has(symbol) && change !== undefined ? [{ symbol, name: change.name }] : [];
+            })
+            .find((candidate) => {
+              const read = reads.get(candidate.symbol);
+              if (read === undefined) return false;
+              let last = read;
+              while (last.next !== undefined) last = last.next;
+              return !locked(last.site.node) && !hasVersion(candidate.symbol, call) && !checksVersion(checker, call, candidate.symbol);
+            });
+          const read = lost === undefined ? undefined : reads.get(lost.symbol);
+          if (lost === undefined || read === undefined) continue;
+          let last = read;
+          while (last.next !== undefined) last = last.next;
+          const through =
+            last === read
+              ? `${callee(read.site.named)}() (${where(read.site.node)})`
+              : `${callee(read.site.named)}() (${where(read.site.node)}), which reaches ${callee(last.site.named)}() (${where(last.site.node)})`;
+          findings.push({
+            node: call,
+            message: `sets ${lost.name} from its value read through ${through}: a request that changes it between that read and this write is lost`,
+            at: placeOf(site.owner),
+            reaching: reachingOf(read),
+          });
+        }
+      }
+      return findings;
+    },
     unauthorizedWrites(file) {
       const findings: Finding[] = [];
       for (const entry of entries(file)) {
@@ -775,6 +901,80 @@ function runsHere(node: ts.Expression): boolean {
       ? outer
       : undefined;
   return function_ !== undefined && (ts.getCombinedModifierFlags(function_) & ts.ModifierFlags.Async) !== 0;
+}
+
+/** The methods of decimal and big-number types that compute a new value: `balance.add(amount)`. */
+const ARITHMETIC_METHODS = new Set(["add", "plus", "sub", "subtract", "minus", "mul", "multiply", "times", "div", "divide", "dividedBy", "mod"]);
+
+const ARITHMETIC = new Set([
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+]);
+
+const COMPOUND = new Set([
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+]);
+
+/** Whether a type is a number or a bigint, so `+` on it counts rather than joins text. */
+function isNumeric(checker: ts.TypeChecker, node: ts.Node): boolean {
+  const type = checker.getNonNullableType(checker.getTypeAtLocation(node));
+  return (type.getFlags() & (ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike)) !== 0;
+}
+
+/** Whether an expression reads `<value>.<name>`, as `product.stock` and `product?.stock` do. */
+function readsProperty(checker: ts.TypeChecker, node: ts.Node, symbol: ts.Symbol, name: string): boolean {
+  if (ts.isPropertyAccessExpression(node) && node.name.text === name && ts.isIdentifier(node.expression) && checker.getSymbolAtLocation(node.expression) === symbol) {
+    return true;
+  }
+  return ts.forEachChild(node, (child) => readsProperty(checker, child, symbol, name) || undefined) ?? false;
+}
+
+/**
+ * Whether an expression computes a new value from `<value>.<name>`: counting with it, as `product.stock - quantity`
+ * does, or with a decimal's methods, as `account.balance.add(amount)` does.
+ */
+function computedFrom(checker: ts.TypeChecker, node: ts.Expression, symbol: ts.Symbol, name: string): boolean {
+  if (!readsProperty(checker, node, symbol, name)) return false;
+  const visit = (child: ts.Node): boolean => {
+    if (ts.isBinaryExpression(child) && ARITHMETIC.has(child.operatorToken.kind) && isNumeric(checker, child)) return true;
+    if (ts.isCallExpression(child) && ts.isPropertyAccessExpression(child.expression) && ARITHMETIC_METHODS.has(child.expression.name.text)) return true;
+    return ts.forEachChild(child, visit) ?? false;
+  };
+  return visit(node);
+}
+
+/**
+ * A change of a value's property from its own old value: `product.stock -= quantity`, `product.stock++`, or
+ * `product.stock = product.stock - quantity`.
+ */
+function changeOf(checker: ts.TypeChecker, node: ts.Node): { target: ts.Expression; name: string } | undefined {
+  if (ts.isBinaryExpression(node) && ts.isPropertyAccessExpression(node.left)) {
+    const { expression, name } = node.left;
+    const symbol = ts.isIdentifier(expression) ? checker.getSymbolAtLocation(expression) : undefined;
+    if (COMPOUND.has(node.operatorToken.kind) && isNumeric(checker, node.left)) return { target: expression, name: name.text };
+    if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken && symbol !== undefined && computedFrom(checker, node.right, symbol, name.text)) {
+      return { target: expression, name: name.text };
+    }
+  }
+  if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && ts.isPropertyAccessExpression(node.operand)) {
+    const counting = node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken;
+    if (counting) return { target: node.operand.expression, name: node.operand.name.text };
+  }
+  return undefined;
+}
+
+/** Whether a write checks the version it read, as `where: { id, version: product.version }` does. */
+function checksVersion(checker: ts.TypeChecker, call: ts.CallExpression, symbol: ts.Symbol): boolean {
+  return ["version", "lockVersion", "rowVersion", "updatedAt"].some((name) => call.arguments.some((argument) => readsProperty(checker, argument, symbol, name)));
 }
 
 /**
