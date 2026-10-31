@@ -4,6 +4,12 @@
   "description": "designguard's adapter for prisma.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoavgeva/designguard-ts.git",
+    "directory": "packages/adapters/prisma"
+  },
+  "homepage": "https://github.com/yoavgeva/designguard-ts#readme",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

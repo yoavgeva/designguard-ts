@@ -4,6 +4,12 @@
   "description": "Write and test designguard adapters: what a library's calls do, checked against typed samples.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoavgeva/designguard-ts.git",
+    "directory": "packages/adapter-kit"
+  },
+  "homepage": "https://github.com/yoavgeva/designguard-ts#readme",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

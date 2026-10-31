@@ -4,6 +4,12 @@
   "description": "The engine behind designguard's ESLint rules: call resolution, effects and adapters over a TypeScript program.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoavgeva/designguard-ts.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/yoavgeva/designguard-ts#readme",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

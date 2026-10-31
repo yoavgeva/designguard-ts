@@ -4,6 +4,12 @@
   "description": "Cross-file design rules for TypeScript: N+1 queries, I/O in transactions, authorization, secrets in the client and more.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoavgeva/designguard-ts.git",
+    "directory": "packages/eslint-plugin"
+  },
+  "homepage": "https://github.com/yoavgeva/designguard-ts#readme",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
