@@ -32,7 +32,7 @@ export interface CallSite {
 /** What the walker needs to know of the adapters: which calls run a transaction, and the names those calls have. */
 export interface Transactions {
   /** The argument of a call that runs inside the transaction it opens, if it opens one. */
-  bodyOf(resolution: Resolution): number | undefined;
+  bodyOf(resolution: Resolution): number | "last" | undefined;
   /** Whether a callee's last name could be a transaction call, so a file's walk resolves it. */
   mightBe(name: string): boolean;
 }
@@ -155,7 +155,8 @@ function walk(
       if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop, transaction });
       visit(node.expression, loop, transaction);
       const perItem = resolution === undefined ? undefined : loopingMethod(node, resolution);
-      const body = resolution === undefined ? undefined : transactions.bodyOf(resolution);
+      const spec = resolution === undefined ? undefined : transactions.bodyOf(resolution);
+      const body = spec === "last" ? (node.arguments ?? []).length - 1 : spec;
       const opened = body === undefined ? undefined : { node, label: `${callee(node.expression)}()` };
       (node.arguments ?? []).forEach((argument, index) => {
         const inLoop = perItem ?? loop;

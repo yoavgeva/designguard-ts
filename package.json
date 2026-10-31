@@ -7,7 +7,7 @@
     "node": ">=20.19"
   },
   "scripts": {
-    "build": "tsc -b packages/core packages/eslint-plugin packages/adapters/prisma packages/adapters/drizzle packages/adapters/typeorm packages/adapters/kysely",
+    "build": "tsc -b packages/core packages/adapter-kit packages/eslint-plugin packages/adapters/prisma packages/adapters/drizzle packages/adapters/typeorm packages/adapters/kysely",
     "typecheck": "pnpm build",
     "lint": "eslint .",
     "test": "vitest run"

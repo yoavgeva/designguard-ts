@@ -20,11 +20,11 @@ export interface EffectSpec {
 
 /**
  * A call that runs a function inside a database transaction, as `{ on: "PrismaClient.$transaction", body: 0 }`: the
- * argument at `body` runs inside it.
+ * argument at `body` runs inside it, or the last one, as TypeORM's `transaction(isolation?, run)` takes it.
  */
 export interface TransactionSpec {
   readonly on: string;
-  readonly body: number;
+  readonly body: number | "last";
 }
 
 /**

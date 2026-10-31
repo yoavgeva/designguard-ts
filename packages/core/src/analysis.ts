@@ -26,6 +26,21 @@ export interface Finding {
   readonly reaching: readonly Reached[];
 }
 
+/** What the adapters make of a call into a package: its effect, the argument it runs in a transaction, or nothing. */
+export interface Role {
+  readonly node: ts.Node;
+  /** The call as messages name it: `prisma.user.findMany`. */
+  readonly callee: string;
+  readonly package: string;
+  /** The qualified name of the declaration it resolves to, which adapter patterns match. */
+  readonly name: string;
+  readonly effect?: EffectKind;
+  /** The argument, counting from 1, that runs inside the transaction the call opens. */
+  readonly transaction?: number;
+  /** Why no adapter applies: the adapter for the package is off for the installed version. */
+  readonly off?: string;
+}
+
 export interface AnalysisOptions {
   readonly adapters: readonly Adapter[];
   /** The directory message paths are relative to: the tsconfig's, unless given. */
@@ -56,6 +71,8 @@ export interface Analysis {
   queriesInLoops(file: ts.SourceFile): Finding[];
   ioInTransactions(file: ts.SourceFile): Finding[];
   unknownIo(file: ts.SourceFile): Finding[];
+  /** What the adapters make of each call a file makes into a package, in the order the calls start. */
+  roles(file: ts.SourceFile): Role[];
   stats(): ResolutionStats;
 }
 
@@ -279,6 +296,32 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         });
       }
       return findings;
+    },
+    roles(file) {
+      const roles: Role[] = [];
+      const sites = ownersOf(file)
+        .flatMap((owner) => summaryOf(owner).calls)
+        .filter((site) => site.node !== site.named)
+        .sort((first, second) => first.node.getStart() - second.node.getStart());
+      for (const site of sites) {
+        const resolution = site.resolution;
+        if (resolution.kind !== "dependency") continue;
+        const off = inactive.get(resolution.package);
+        const effect = direct(site);
+        const body = transactions.bodyOf(resolution);
+        const argumentCount = ts.isCallExpression(site.node) || ts.isNewExpression(site.node) ? (site.node.arguments ?? []).length : 0;
+        const version = versionOf(resolution.package) ?? "";
+        roles.push({
+          node: site.node,
+          callee: callee(site.named),
+          package: resolution.package,
+          name: resolution.name,
+          ...(effect === undefined ? {} : { effect }),
+          ...(body === undefined ? {} : { transaction: body === "last" ? argumentCount : body + 1 }),
+          ...(off === undefined ? {} : { off: `${resolution.package} ${version} is outside ${off.range}` }),
+        });
+      }
+      return roles;
     },
     stats() {
       const files = program.getSourceFiles().filter(isProject);
