@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Node ${{ matrix.node }}, ESLint ${{ matrix.eslint }}, TypeScript ${{ matrix.typescript }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+        eslint: ["^9.15.0", "^10.0.0"]
+        typescript: ["~5.9.0", "~6.0.0"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      # The versions the plugin supports, in place of the ones the workspace's catalog pins, for every package at once.
+      - run: |
+          sed -i -E 's/^  typescript: .*/  typescript: "${{ matrix.typescript }}"/; s/^  eslint: .*/  eslint: "${{ matrix.eslint }}"/' pnpm-workspace.yaml
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test

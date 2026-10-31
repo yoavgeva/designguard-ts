@@ -1,0 +1,8 @@
+packages:
+  - packages/*
+  - packages/adapters/*
+
+# One version of each, for every package: CI rewrites these to test other versions.
+catalog:
+  typescript: 6.0.3
+  eslint: 10.14.0
