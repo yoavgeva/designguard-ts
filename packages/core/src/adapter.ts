@@ -25,6 +25,11 @@ export interface EffectSpec {
 export interface Adapter {
   readonly name: string;
   readonly packages: readonly string[];
+  /**
+   * Patterns over the paths of project files that belong to the library: code it generates there, such as Prisma's
+   * `generated/prisma` folder. Their declarations match the adapter's patterns as the first package's do.
+   */
+  readonly files?: readonly string[];
   readonly effects?: readonly EffectSpec[];
 }
 

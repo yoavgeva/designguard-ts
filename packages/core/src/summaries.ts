@@ -36,7 +36,12 @@ const STATEMENT_LOOPS: Partial<Record<ts.SyntaxKind, string>> = {
 };
 
 /** The summaries of every function in one of the project's files, the file's top-level code as one more. */
-export function summarize(program: ts.Program, checker: ts.TypeChecker, file: ts.SourceFile): FunctionSummary[] {
+export function summarize(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  file: ts.SourceFile,
+  claims: (fileName: string) => string | undefined,
+): FunctionSummary[] {
   const summaries: FunctionSummary[] = [];
 
   const walk = (owner: FunctionLike | ts.SourceFile): void => {
@@ -48,12 +53,12 @@ export function summarize(program: ts.Program, checker: ts.TypeChecker, file: ts
         return;
       }
       if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-        const resolution = resolveCall(program, checker, node);
+        const resolution = resolveCall(program, checker, node, claims);
         calls.push({ node, named: node.expression, resolution, loop });
         visit(node.expression, loop);
         const perItem = loopingMethod(node, resolution);
         for (const argument of node.arguments ?? []) {
-          const passed = passedFunction(program, checker, argument);
+          const passed = passedFunction(program, checker, argument, claims);
           if (passed !== undefined) calls.push({ node: argument, named: argument, resolution: passed, loop: perItem ?? loop });
           visit(argument, perItem ?? loop);
         }
@@ -106,7 +111,12 @@ function loopingMethod(call: ts.CallLikeExpression, resolution: Resolution): Loo
 }
 
 /** A project function passed by name as an argument, as `ids.map(loadUser)` passes `loadUser`. */
-function passedFunction(program: ts.Program, checker: ts.TypeChecker, argument: ts.Expression): Resolution | undefined {
+function passedFunction(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  argument: ts.Expression,
+  claims: (fileName: string) => string | undefined,
+): Resolution | undefined {
   if (!ts.isIdentifier(argument) && !ts.isPropertyAccessExpression(argument)) return undefined;
   let symbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(argument) ? argument.name : argument);
   if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
@@ -119,6 +129,6 @@ function passedFunction(program: ts.Program, checker: ts.TypeChecker, argument: 
       : undefined;
   if (target === undefined) return undefined;
   const file = target.getSourceFile();
-  if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file)) return undefined;
+  if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file) || claims(file.fileName) !== undefined) return undefined;
   return { kind: "project", targets: [target] };
 }

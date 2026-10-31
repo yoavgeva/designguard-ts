@@ -21,13 +21,24 @@ export type Resolution =
 
 const implementers = new WeakMap<ts.Program, Map<ts.Symbol, ts.ClassLikeDeclaration[]>>();
 
-export function resolveCall(program: ts.Program, checker: ts.TypeChecker, call: ts.CallLikeExpression): Resolution {
+/**
+ * What a call reaches. `claims` names the package a project file belongs to when a library generated it there, so
+ * its declarations count as the package's.
+ */
+export function resolveCall(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  call: ts.CallLikeExpression,
+  claims: (fileName: string) => string | undefined = () => undefined,
+): Resolution {
   const declaration = declarationOf(checker, call);
   if (declaration === undefined) return { kind: "unresolved", reason: "any" };
   const file = declaration.getSourceFile();
   if (program.isSourceFileDefaultLibrary(file)) {
     return { kind: "lib", name: qualifiedName(checker, declaration), declaration };
   }
+  const claimed = claims(file.fileName);
+  if (claimed !== undefined) return { kind: "dependency", package: claimed, name: qualifiedName(checker, declaration), declaration };
   if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file)) {
     return { kind: "dependency", package: packageOf(file.fileName), name: qualifiedName(checker, declaration), declaration };
   }

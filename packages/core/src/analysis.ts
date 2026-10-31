@@ -1,6 +1,7 @@
 import { dirname, relative } from "node:path";
 import ts from "typescript";
 import type { Adapter, EffectKind } from "./adapter.js";
+import { glob } from "./patterns.js";
 import type { FunctionLike } from "./resolve.js";
 import { type CallSite, type FunctionSummary, summarize } from "./summaries.js";
 
@@ -54,11 +55,14 @@ export function analyze(program: ts.Program, adapters: readonly Adapter[]): Anal
 function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
   const checker = program.getTypeChecker();
   const root = projectRoot(program);
-  const files = program.getSourceFiles().filter((file) => !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file));
+  const claims = claimsOf(adapters);
+  const files = program
+    .getSourceFiles()
+    .filter((file) => !file.isDeclarationFile && !program.isSourceFileFromExternalLibrary(file) && claims(file.fileName) === undefined);
   const summaries = new Map<FunctionLike | ts.SourceFile, FunctionSummary>();
   const byFile = new Map<ts.SourceFile, FunctionSummary[]>();
   for (const file of files) {
-    const found = summarize(program, checker, file);
+    const found = summarize(program, checker, file, claims);
     byFile.set(file, found);
     for (const summary of found) summaries.set(summary.node, summary);
   }
@@ -132,6 +136,17 @@ function build(program: ts.Program, adapters: readonly Adapter[]): Analysis {
   };
 }
 
+/**
+ * Which adapter's package a project file belongs to, for code a library generates into the project, as Prisma's
+ * `prisma-client` generator writes the client to `generated/prisma`: the adapter claims it with `files`.
+ */
+function claimsOf(adapters: readonly Adapter[]): (fileName: string) => string | undefined {
+  const claimed = adapters.flatMap((adapter) =>
+    (adapter.files ?? []).map((pattern) => ({ pattern: glob(pattern), package: adapter.packages[0] ?? adapter.name })),
+  );
+  return (fileName) => claimed.find((claim) => claim.pattern.test(fileName))?.package;
+}
+
 /** Each function's effects, reached through the project functions it calls, found by iterating to a fixpoint. */
 function propagate(
   all: readonly FunctionSummary[],
@@ -182,17 +197,3 @@ function projectRoot(program: ts.Program): string {
   return typeof config === "string" ? dirname(config) : program.getCurrentDirectory();
 }
 
-/** A pattern as a regular expression: `*` matches anything, `{a,b}` either alternative. */
-function glob(pattern: string): RegExp {
-  let source = "";
-  for (const part of pattern.split(/(\*|\{[^}]*\})/)) {
-    if (part === "*") source += ".*";
-    else if (part.startsWith("{") && part.endsWith("}")) source += `(?:${part.slice(1, -1).split(",").map(escape).join("|")})`;
-    else source += escape(part);
-  }
-  return new RegExp(`^${source}$`);
-}
-
-function escape(text: string): string {
-  return text.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-}

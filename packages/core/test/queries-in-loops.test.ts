@@ -62,6 +62,26 @@ describe("queriesInLoops", () => {
     ]);
   });
 
+  it("reads a client generated into the project as the adapter's package, when the adapter claims its files", () => {
+    const generated = defineAdapter({ ...prisma, files: ["**/generated/prisma/**"] });
+    const { program } = project({
+      "src/generated/prisma/client.ts": `
+        export interface UserDelegate { findUnique(args: object): Promise<{ id: string } | null> }
+        export declare const prisma: { user: UserDelegate };`,
+      "src/main.ts": `
+        import { prisma } from "./generated/prisma/client.js";
+        export async function show(ids: string[]) {
+          for (const id of ids) await prisma.user.findUnique({ where: { id } });
+        }`,
+    });
+    const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
+    if (main === undefined) throw new Error("no src/main.ts");
+    expect(analyze(program, [generated]).queriesInLoops(main).map((finding) => finding.message)).toEqual([
+      "queries the database once per item: the for…of loop calls prisma.user.findUnique()",
+    ]);
+    expect(analyze(program, [prisma]).queriesInLoops(main)).toEqual([]);
+  });
+
   it("passes queries outside loops, and loops that touch nothing outside the code", () => {
     expect(
       findings({
