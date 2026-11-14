@@ -127,14 +127,15 @@ function registered(
 ): EntryPoint | undefined {
   const index = spec.handler === undefined || spec.handler === "last" ? call.arguments.length - 1 : spec.handler;
   const argument = call.arguments[index];
-  const handler = argument === undefined ? undefined : functionOf(program, checker, argument, claims);
-  if (argument === undefined || handler === undefined) return undefined;
-  const middleware = call.arguments.slice(0, index).flatMap((before) => middlewareOf(program, checker, before, claims));
+  const found = argument === undefined ? undefined : unwrapped(program, checker, argument, claims);
+  if (argument === undefined || found === undefined) return undefined;
+  const handler = found.handler;
+  const middleware = [...call.arguments.slice(0, index), ...found.wrappers].flatMap((before) => middlewareOf(program, checker, before, claims));
   const chain = spec.middleware === undefined ? { middleware: [], builders: [] } : chainMiddleware(program, checker, call, spec, specs, resolve, claims);
   middleware.unshift(...chain.middleware);
   return {
     handler,
-    at: handler === argument ? undefined : argument,
+    at: found.reference,
     label: labelOf(call, resolve(call)),
     reads: spec.reads === true,
     parameters: spec.parameters ?? [],
@@ -373,19 +374,49 @@ function wrappedExport(
     return undefined;
   }
   const name = node.name.text;
-  for (let index = call.arguments.length - 1; index >= 0; index--) {
-    const argument = call.arguments[index];
-    const handler = argument === undefined ? undefined : functionOf(program, checker, argument, claims);
-    if (argument === undefined || handler === undefined) continue;
-    const spec = specs.find((candidate) => candidate.exports !== undefined && glob(candidate.exports).test(name) && takes(checker, handler, candidate));
-    if (spec === undefined) return undefined;
-    return {
-      ...declared(handler, `${name}()`, spec, []),
-      at: handler === argument ? undefined : argument,
-      middleware: middlewareOf(program, checker, call.expression, claims),
-    };
+  const found = unwrapped(program, checker, call, claims);
+  if (found === undefined) return undefined;
+  const { handler, wrappers, reference } = found;
+  const spec = specs.find((candidate) => candidate.exports !== undefined && glob(candidate.exports).test(name) && takes(checker, handler, candidate));
+  if (spec === undefined) return undefined;
+  return {
+    ...declared(handler, `${name}()`, spec, []),
+    at: reference,
+    middleware: wrappers.flatMap((wrapper) => middlewareOf(program, checker, wrapper, claims)),
+  };
+}
+
+/**
+ * The function an argument is or wraps, with the wrappers it goes through on the way, outermost first: as
+ * `withErrors(requirePermission("p", handler))` wraps `handler` in `requirePermission`, and so does a variable
+ * holding `requirePermission("p", handler)`. A wrapper's function argument is its last one. `reference` is the name
+ * that refers to it when it's written elsewhere, where findings about it are reported.
+ */
+function unwrapped(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  argument: ts.Expression,
+  claims: Claims,
+  seen = new Set<ts.Node>(),
+): { handler: FunctionLike; wrappers: ts.Expression[]; reference: ts.Expression | undefined } | undefined {
+  if (seen.has(argument)) return undefined;
+  seen.add(argument);
+  if (ts.isCallExpression(argument)) {
+    for (let index = argument.arguments.length - 1; index >= 0; index--) {
+      const inner = argument.arguments[index];
+      const found = inner === undefined ? undefined : unwrapped(program, checker, inner, claims, seen);
+      if (found !== undefined) return { ...found, wrappers: [argument.expression, ...found.wrappers] };
+    }
+    return undefined;
   }
-  return undefined;
+  if (ts.isIdentifier(argument)) {
+    const declaration = aliased(checker, checker.getSymbolAtLocation(argument))?.valueDeclaration;
+    const initializer = declaration !== undefined && ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined;
+    const found = initializer !== undefined && ts.isCallExpression(initializer) ? unwrapped(program, checker, initializer, claims, seen) : undefined;
+    if (found !== undefined) return { ...found, reference: argument };
+  }
+  const handler = functionOf(program, checker, argument, claims);
+  return handler === undefined ? undefined : { handler, wrappers: [], reference: handler === argument ? undefined : argument };
 }
 
 /** Whether a handler's first parameter's type, or a type it extends, matches a spec's `takes`. */

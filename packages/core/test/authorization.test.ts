@@ -376,7 +376,7 @@ describe("standard entry points", () => {
     ]);
   });
 
-  it("passes route handlers a wrapper returns a handler for that checks the user's role, through other wrappers too", () => {
+  it("passes route handlers a wrapper checks for, by its name or the handler it returns, through other wrappers and variables too", () => {
     expect(
       findings("unauthorizedWrites", {
         "src/api-auth.ts": `
@@ -394,18 +394,30 @@ describe("standard entry points", () => {
           }
           export function withTiming(handler: Handler) {
             return async (request: Request) => handler(request, undefined);
+          }
+          export function requirePermission(permission: string, handler: Handler) {
+            return handler;
           }`,
         "src/main.ts": `
           import { prisma } from "./db.js";
-          import { withBackofficeAuth, withTiming } from "./api-auth.js";
+          import { withBackofficeAuth, withTiming, requirePermission } from "./api-auth.js";
           export const DELETE = withBackofficeAuth(async (request: Request) => {
             await prisma.user.update({ where: { id: "1" }, data: {} });
             return Response.json({});
           });
-          export const PATCH = withTiming(async (request: Request) => {
+          export const PATCH = withTiming(withTiming(async (request: Request) => {
             await prisma.user.update({ where: { id: "1" }, data: {} });
             return Response.json({});
-          });`,
+          }));
+          const putHandler = requirePermission("admin.settings", async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          });
+          export const PUT = withTiming(putHandler);
+          export const POST = withTiming(requirePermission("admin.settings", async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          }));`,
       }),
     ).toEqual([
       "9: PATCH() writes to the database through prisma.user.update() with nothing checking that the user asking may",
