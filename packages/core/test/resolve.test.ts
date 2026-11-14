@@ -86,6 +86,24 @@ describe("resolveCall", () => {
     });
   });
 
+  it("names a package in a dot folder of node_modules by the folder and its subfolder, as Prisma generates its client", () => {
+    expect(
+      resolutions({
+        "node_modules/@prisma/client/package.json": JSON.stringify({ name: "@prisma/client", version: "6.1.0", types: "index.d.ts" }),
+        "node_modules/@prisma/client/index.d.ts": `export * from ".prisma/client";`,
+        "node_modules/.prisma/client/package.json": JSON.stringify({ name: "prisma-client-58827e45", types: "index.d.ts" }),
+        "node_modules/.prisma/client/index.d.ts": `
+          export interface UserDelegate { findMany(args?: object): Promise<{ id: string }[]> }
+          export declare class PrismaClient { user: UserDelegate }`,
+        "src/main.ts": `
+          import { PrismaClient } from "@prisma/client";
+          new PrismaClient().user.findMany();`,
+      }),
+    ).toEqual({
+      "new PrismaClient().user.findMany": { kind: "dependency", package: ".prisma/client", name: "UserDelegate.findMany" },
+    });
+  });
+
   it("names a call through a property or variable of a function type by the property or variable", () => {
     expect(
       resolutions({
