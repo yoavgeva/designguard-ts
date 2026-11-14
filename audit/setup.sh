@@ -27,7 +27,14 @@ for app in $apps; do
       corepack pnpm install --ignore-scripts --frozen-lockfile || corepack pnpm install --ignore-scripts --no-frozen-lockfile
     else CI=1 npm install --ignore-scripts --no-audit --no-fund; fi 2>&1 | tail -2
     [ -d packages/common ] && [ -f packages/common/tsconfig.build.json ] && npx tsc -p packages/common/tsconfig.build.json
-    find . -name schema.prisma -not -path '*/node_modules/*' | while read -r schema; do
-      npx --no-install prisma generate --schema \"\$schema\" 2>&1 | tail -1
-    done"
+    # Prisma's config may need a database URL to load; generating never connects.
+    export DATABASE_URL=postgresql://audit:audit@localhost:5432/audit DIRECT_DATABASE_URL=postgresql://audit:audit@localhost:5432/audit
+    export DIRECT_URL=\$DATABASE_URL
+    if [ -d node_modules/prisma ] && npx --no-install prisma generate > /tmp/generate.log 2>&1; then tail -1 /tmp/generate.log
+    else
+      grep -l '^generator' \$(find . -name '*.prisma' -not -path '*/node_modules/*') 2>/dev/null | while read -r schema; do
+        folder=\$(dirname \"\$schema\"); [ \$(ls \"\$folder\"/*.prisma | wc -l) -gt 1 ] && schema=\$folder
+        (cd \"\$(dirname \"\$folder\")\" && npx --no-install prisma generate --schema \"\$OLDPWD/\$schema\" 2>&1 | tail -1)
+      done
+    fi"
 done
