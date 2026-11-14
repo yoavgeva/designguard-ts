@@ -125,6 +125,25 @@ describe("queriesInLoops", () => {
     ).toEqual([]);
   });
 
+  it("passes loops over a list written in the code, which run the same number of times whatever the data", () => {
+    expect(
+      findings({
+        "src/users.ts": users,
+        "src/main.ts": `
+          import { loadUser } from "./users.js";
+          const roles = ["owner", "admin"] as const;
+          export async function show(owner: string, admin: string, ids: string[]) {
+            for (const [role, id] of [["owner", owner], ["admin", admin]] as const) await loadUser(role + id);
+            for (const role of roles) await loadUser(role);
+            await Promise.all([owner, admin].map(loadUser));
+            for (const id of [owner, ...ids]) await loadUser(id);
+          }`,
+      }),
+    ).toEqual([
+      "8: queries the database once per item: the for…of loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+    ]);
+  });
+
   it("names the shortest way to a query, ties by the first call, whatever was asked before", () => {
     expect(
       findings({

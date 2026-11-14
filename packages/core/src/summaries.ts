@@ -5,7 +5,8 @@ import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from
 /**
  * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
  * loop, or the callback of an array method such as `map()`; a `while` loop polls or retries rather than walking
- * items, so it isn't one. A transaction is the function an adapter's transaction call runs.
+ * items, so it isn't one, and neither is a loop over a list written in the code, which runs as often whatever the
+ * data. A transaction is the function an adapter's transaction call runs.
  */
 export interface Scope {
   readonly node: ts.Node;
@@ -154,7 +155,7 @@ function walk(
       const resolution = options.resolveAll || scoped || candidate ? resolveCall(program, checker, node, claims) : undefined;
       if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop, transaction });
       visit(node.expression, loop, transaction);
-      const perItem = resolution === undefined ? undefined : loopingMethod(node, resolution);
+      const perItem = resolution === undefined ? undefined : loopingMethod(checker, node, resolution);
       const spec = resolution === undefined ? undefined : transactions.bodyOf(resolution);
       const body = spec === "last" ? (node.arguments ?? []).length - 1 : spec;
       const opened = body === undefined ? undefined : { node, label: `${callee(node.expression)}()` };
@@ -173,7 +174,7 @@ function walk(
       return;
     }
     const label = STATEMENT_LOOPS[node.kind];
-    if (label !== undefined && isIterationStatement(node)) {
+    if (label !== undefined && isIterationStatement(node) && !(ts.isForOfStatement(node) && isWrittenList(checker, node.expression))) {
       ts.forEachChild(node, (child) => {
         visit(child, child === node.statement ? { node, label } : loop, transaction);
       });
@@ -216,10 +217,43 @@ export function isInlineCallback(node: FunctionLike): boolean {
 }
 
 /** The loop of a call to an array method that calls its callback once per item, such as `ids.map(...)`. */
-function loopingMethod(call: ts.CallLikeExpression, resolution: Resolution): Scope | undefined {
+function loopingMethod(checker: ts.TypeChecker, call: ts.CallLikeExpression, resolution: Resolution): Scope | undefined {
   if (resolution.kind !== "lib" || !LOOPING.test(resolution.name) || !ts.isCallExpression(call)) return undefined;
+  if (ts.isPropertyAccessExpression(call.expression) && isWrittenList(checker, call.expression.expression)) return undefined;
   const name = ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : resolution.name;
   return { node: call, label: `${name}()` };
+}
+
+/**
+ * A list whose items are all written in the code, as `[owner, admin]` is, directly or in a `const`: a loop over it
+ * runs as many times whatever the data. A spread, as `[owner, ...ids]` has, adds items from the data.
+ */
+function isWrittenList(checker: ts.TypeChecker, expression: ts.Expression): boolean {
+  const list = withoutWrappers(expression);
+  if (ts.isArrayLiteralExpression(list)) return isWritten(list);
+  if (!ts.isIdentifier(list)) return false;
+  const declaration = checker.getSymbolAtLocation(list)?.valueDeclaration;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return false;
+  const initializer = withoutWrappers(declaration.initializer);
+  return (
+    ts.isVariableDeclarationList(declaration.parent) &&
+    (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+    ts.isArrayLiteralExpression(initializer) &&
+    isWritten(initializer)
+  );
+}
+
+function isWritten(list: ts.ArrayLiteralExpression): boolean {
+  return !list.elements.some(ts.isSpreadElement);
+}
+
+/** An expression without the parentheses and type assertions around it: `[a, b]` for `([a, b] as const)`. */
+function withoutWrappers(expression: ts.Expression): ts.Expression {
+  let inner = expression;
+  while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner) || ts.isSatisfiesExpression(inner) || ts.isTypeAssertionExpression(inner)) {
+    inner = inner.expression;
+  }
+  return inner;
 }
 
 /** A project function passed by name as an argument, as `ids.map(loadUser)` passes `loadUser`. */
