@@ -85,6 +85,14 @@ export function isCheckName(name: string): boolean {
 }
 
 /**
+ * Whether a list or set by this name holds roles, permissions or members, so asking it about the user asking checks
+ * what they may do, as `allowedRoles.includes(user.role)` and `session.user.permissions.has("write")` do.
+ */
+export function isPermissionListName(name: string): boolean {
+  return wordsOf(name).some((word) => CHECKING.has(word) || CHECKED.has(word));
+}
+
+/**
  * Whether a decorator by this name states who may call what it's on, as `@Roles("admin")`, `@Permissions(...)` and
  * `@Public()` do: a guard reads what it records.
  */

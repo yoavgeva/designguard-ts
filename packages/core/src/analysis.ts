@@ -12,6 +12,7 @@ import { standards } from "./standards.js";
 import {
   type CallSite,
   type FunctionSummary,
+  isFunctionWithBody,
   isInlineCallback,
   nameOf,
   ownersOf,
@@ -19,7 +20,7 @@ import {
   summarizeFunction,
   type Transactions,
 } from "./summaries.js";
-import { isCheckName, isRequirementName, isUserCall } from "./words.js";
+import { isCheckName, isPermissionListName, isRequirementName, isUserCall } from "./words.js";
 
 /** A function in the project, by its file's absolute path and its name, as `nameOf` gives it. */
 export interface Place {
@@ -211,7 +212,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     const name = site.node === site.named ? undefined : lastName(site.named);
     const count = ts.isCallExpression(site.node) || ts.isNewExpression(site.node) ? (site.node.arguments ?? []).length : 0;
     if (matching(site, userMatchers) || (name !== undefined && isUserCall(name, count))) kinds.push("user");
-    if (matching(site, checkMatchers) || (name !== undefined && isCheckName(name))) kinds.push("check");
+    if (matching(site, checkMatchers) || (name !== undefined && isCheckName(name)) || asksPermissionList(site.node)) kinds.push("check");
     const target = packaged(site.resolution);
     const list = target === undefined ? undefined : listMatchers.find((matcher) => matcher.packages.includes(target.package) && matcher.pattern.test(target.name));
     if (list !== undefined && ts.isCallExpression(site.node) && loadsEveryRow(site.node, list.spec)) kinds.push("all");
@@ -389,6 +390,32 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     return `${first}, which reaches ${callee(last.site.named)}() (${relative(root, file.fileName)}:${String(line)})`;
   };
 
+  /**
+   * The functions a function returns, as a wrapper returns the handler it makes, followed through the project
+   * functions it returns the result of, as `withAdmin(handler)` returns `withAuth(["admin"], handler)`.
+   */
+  const returnedFunctions = (function_: FunctionLike, seen = new Set<FunctionLike>()): FunctionLike[] => {
+    if (seen.has(function_)) return [];
+    seen.add(function_);
+    const found: FunctionLike[] = [];
+    const returned = (expression: ts.Expression): void => {
+      let value = expression;
+      while (ts.isParenthesizedExpression(value) || ts.isAwaitExpression(value) || ts.isAsExpression(value)) value = value.expression;
+      if (isFunctionWithBody(value)) found.push(value);
+      else if (ts.isCallExpression(value)) {
+        const resolution = resolveCall(program, checker, value, claims);
+        if (resolution.kind === "project") for (const target of resolution.targets) found.push(...returnedFunctions(target, seen));
+      }
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isReturnStatement(node) && node.expression !== undefined) returned(node.expression);
+      else if (!isFunctionWithBody(node)) ts.forEachChild(node, visit);
+    };
+    if (ts.isBlock(function_.body)) ts.forEachChild(function_.body, visit);
+    else returned(function_.body);
+    return found;
+  };
+
   const entries = (file: ts.SourceFile): EntryPoint[] =>
     cached(entryCache, file, key, () => entriesOf(program, checker, file, entrySpecs, claims));
 
@@ -428,12 +455,16 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       const function_ = middleware.function;
       if (function_ === undefined) continue;
       if (isRequirementName(nameOf(function_))) return `runs after ${nameOf(function_)}`;
-      // As an API key does: the request proves it may do what it asks. Middleware that only reads the user asking
-      // doesn't, since the handler may still write what they may not.
-      const secret = flowOf(checker, function_, entry.parameters, entry.decoratorsOf).readsSecret;
-      if (secret !== undefined) return `runs after ${nameOf(function_)}, which checks a secret the request sends: ${oneLine(secret.getText())}`;
-      const check = effectsOf(function_).get("check");
-      if (check !== undefined) return `runs after middleware that checks permissions through ${describe(check)}`;
+      // Middleware made by a factory, or a wrapper's, runs as the function they return, as `withAuth(handler)`
+      // returns the handler that runs instead.
+      for (const runs of [function_, ...returnedFunctions(function_)]) {
+        // As an API key does: the request proves it may do what it asks. Middleware that only reads the user asking
+        // doesn't, since the handler may still write what they may not.
+        const secret = flowOf(checker, runs, entry.parameters, entry.decoratorsOf).readsSecret;
+        if (secret !== undefined) return `runs after ${nameOf(function_)}, which checks a secret the request sends: ${oneLine(secret.getText())}`;
+        const check = effectsOf(runs).get("check");
+        if (check !== undefined) return `runs after ${nameOf(function_)}, which checks permissions through ${describe(check)}`;
+      }
     }
     for (const call of entry.decorators) {
       const name = lastName(call.expression);
@@ -1139,6 +1170,16 @@ function aggregates(call: ts.CallExpression, names: RegExp): boolean {
     return (name !== undefined && names.test(name)) || (ts.forEachChild(node, visit) ?? false);
   };
   return calls.some((each) => each.arguments.some(visit));
+}
+
+/** The methods that ask a list or set whether it holds something. */
+const ASKING_LISTS = new Set(["includes", "has", "some", "every", "indexOf", "find", "findIndex"]);
+
+/** A call asking a list of roles or permissions about something, as `allowedRoles.includes(user.role)` does. */
+function asksPermissionList(call: ts.Node): boolean {
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression) || !ASKING_LISTS.has(call.expression.name.text)) return false;
+  const list = lastName(call.expression.expression);
+  return list !== undefined && isPermissionListName(list);
 }
 
 /** The last name of a callee: `update` for `prisma.user.update`, `load` for `load`. */

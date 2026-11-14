@@ -322,10 +322,14 @@ function labelOf(call: ts.CallExpression, resolution: Resolution): string {
   return `the ${method}() handler`;
 }
 
-/** The middleware an argument gives: a function, or a name for one. */
+/**
+ * The middleware an argument gives: a function, or a name for one, or a call to a factory that makes it, as
+ * `requireRole("admin")` is, by the factory's name and function.
+ */
 function middlewareOf(program: ts.Program, checker: ts.TypeChecker, argument: ts.Expression, claims: Claims): Middleware[] {
-  const function_ = functionOf(program, checker, argument, claims);
-  const name = ts.isIdentifier(argument) ? argument.text : ts.isPropertyAccessExpression(argument) ? argument.name.text : "";
+  const named = ts.isCallExpression(argument) ? argument.expression : argument;
+  const function_ = functionOf(program, checker, named, claims);
+  const name = ts.isIdentifier(named) ? named.text : ts.isPropertyAccessExpression(named) ? named.name.text : "";
   return function_ === undefined && name === "" ? [] : [{ name, function: function_ }];
 }
 

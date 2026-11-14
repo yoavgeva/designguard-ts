@@ -204,7 +204,7 @@ function isIterationStatement(node: ts.Node): node is ts.IterationStatement {
   return STATEMENT_LOOPS[node.kind] !== undefined;
 }
 
-function isFunctionWithBody(node: ts.Node): node is FunctionLike {
+export function isFunctionWithBody(node: ts.Node): node is FunctionLike {
   return ts.isFunctionLike(node) && (node as ts.FunctionLikeDeclaration).body !== undefined;
 }
 

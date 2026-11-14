@@ -194,7 +194,25 @@ describe("unauthorizedWrites", () => {
           import signedIn from "./signed-in.js";
           import { apiKeyAuth, signIn } from "./keys.js";
           app.use("/internal", apiKeyAuth, internal);
-          app.use("/me", signIn, signedIn);`,
+          app.use("/me", signIn, signedIn);
+          import { requireRole, guard, logRequests } from "./factories.js";
+          app.post("/factory/a", requireRole("admin"), ${update});
+          app.post("/factory/b", guard(["admin"]), ${update});
+          app.post("/factory/c", logRequests("factory"), ${update});`,
+        "src/factories.ts": `
+          import type { Request, Response } from "router";
+          export function requireRole(role: string) {
+            return (req: Request, res: Response, next: () => void) => next();
+          }
+          export function guard(allowedRoles: string[]) {
+            return (req: Request, res: Response, next: () => void) => {
+              if (!allowedRoles.includes(req.user?.id ?? "")) throw new Error("403");
+              next();
+            };
+          }
+          export function logRequests(label: string) {
+            return (req: Request, res: Response, next: () => void) => next();
+          }`,
         "src/keys.ts": `
           import type { Request, Response } from "router";
           export function apiKeyAuth(req: Request, res: Response, next: () => void) {
@@ -232,6 +250,7 @@ describe("unauthorizedWrites", () => {
       "9: the POST /early handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
       "15: the POST /administrator handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
       "16: the POST /other handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "29: the POST /factory/c handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
     ]);
   });
 });
@@ -354,6 +373,42 @@ describe("standard entry points", () => {
     ]);
     expect(findings("unauthorizedReads", { "src/main.ts": routes })).toEqual([
       "10: GET() reads a record by a key the request sends through prisma.user.findUnique(): nothing checks that the user asking may see it",
+    ]);
+  });
+
+  it("passes route handlers a wrapper returns a handler for that checks the user's role, through other wrappers too", () => {
+    expect(
+      findings("unauthorizedWrites", {
+        "src/api-auth.ts": `
+          import { getServerSession } from "auth";
+          type Handler = (request: Request, session: unknown) => Promise<Response>;
+          export function withAuth(allowedRoles: string[], handler: Handler) {
+            return async (request: Request) => {
+              const session = await getServerSession({});
+              if (session === null || !allowedRoles.includes(session.user.id)) return new Response(null, { status: 403 });
+              return handler(request, session);
+            };
+          }
+          export function withBackofficeAuth(handler: Handler) {
+            return withAuth(["ADMIN", "CONSULTANT"], handler);
+          }
+          export function withTiming(handler: Handler) {
+            return async (request: Request) => handler(request, undefined);
+          }`,
+        "src/main.ts": `
+          import { prisma } from "./db.js";
+          import { withBackofficeAuth, withTiming } from "./api-auth.js";
+          export const DELETE = withBackofficeAuth(async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          });
+          export const PATCH = withTiming(async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          });`,
+      }),
+    ).toEqual([
+      "9: PATCH() writes to the database through prisma.user.update() with nothing checking that the user asking may",
     ]);
   });
 });
