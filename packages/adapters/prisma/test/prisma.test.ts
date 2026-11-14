@@ -34,6 +34,33 @@ describe("prisma adapter", () => {
   });
 });
 
+describe("prisma adapter, with the client Prisma 5 and 6 generate into node_modules/.prisma/client", () => {
+  it("reads delegates as queries and runs $transaction's callback in a transaction", () => {
+    expect(
+      rolesOf(prisma, {
+        files: {
+          ...stubPackage("@prisma/client", "6.1.0", `export * from ".prisma/client";`),
+          "node_modules/.prisma/client/package.json": JSON.stringify({ name: "prisma-client-58827e45", types: "index.d.ts" }),
+          "node_modules/.prisma/client/index.d.ts": generated["generated/prisma/client.ts"].replace(
+            "export declare const prisma: PrismaClient;",
+            "export declare const PrismaClient: new () => PrismaClient;",
+          ),
+        },
+        code: `
+          import { PrismaClient } from "@prisma/client";
+          const prisma = new PrismaClient();
+          await prisma.user.findMany();
+          await prisma.$transaction(async (tx) => tx.user.update({ where: {}, data: {} }));`,
+      }),
+    ).toEqual([
+      "PrismaClient(): .prisma/client PrismaClient",
+      "prisma.user.findMany(): .prisma/client UserDelegate.findMany, db.read",
+      "prisma.$transaction(): .prisma/client PrismaClient.$transaction, transaction running its argument 1",
+      "tx.user.update(): .prisma/client UserDelegate.update, db.write",
+    ]);
+  });
+});
+
 describe("prisma adapter's reads", () => {
   const files = {
     ...generated,

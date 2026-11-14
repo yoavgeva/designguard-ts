@@ -105,7 +105,7 @@ describe("queriesInLoops", () => {
     expect(analyze(program, { adapters: [prisma] }).queriesInLoops(main)).toEqual([]);
   });
 
-  it("passes queries outside loops, polling loops, and loops that touch nothing outside the code", () => {
+  it("passes queries outside loops, polling and retry loops, and loops that touch nothing outside the code", () => {
     expect(
       findings({
         "src/users.ts": users,
@@ -119,10 +119,37 @@ describe("queriesInLoops", () => {
             let user = await loadUser("1");
             while (user === null) user = await loadUser("1");
             do user = await loadUser("1"); while (user === null);
+            for (let attempt = 0; ; attempt++) if (await loadUser(String(attempt)) === null) break;
+            const ATTEMPTS = 3;
+            for (let attempt = 0; attempt < ATTEMPTS; attempt++) await loadUser(String(attempt));
+            for (let attempt = 1; attempt <= 5; attempt++) await loadUser(String(attempt));
+            const options = { maxRetries: ids.length };
+            for (let i = 0; i < options.maxRetries; i++) await loadUser(String(i));
             return { first, labels, later };
           }`,
       }),
     ).toEqual([]);
+  });
+
+  it("passes loops over a list written in the code, which run the same number of times whatever the data", () => {
+    expect(
+      findings({
+        "src/users.ts": users,
+        "src/main.ts": `
+          import { loadUser } from "./users.js";
+          const roles = ["owner", "admin"] as const;
+          export async function show(owner: string, admin: string, ids: string[]) {
+            for (const [role, id] of [["owner", owner], ["admin", admin]] as const) await loadUser(role + id);
+            for (const role of roles) await loadUser(role);
+            await Promise.all([owner, admin].map(loadUser));
+            for (const id of [owner, ...ids]) await loadUser(id);
+            for (let i = 0; i < ids.length; i++) await loadUser(ids[i] ?? "");
+          }`,
+      }),
+    ).toEqual([
+      "8: queries the database once per item: the for…of loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+      "9: queries the database once per item: the for loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+    ]);
   });
 
   it("names the shortest way to a query, ties by the first call, whatever was asked before", () => {

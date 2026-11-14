@@ -13,7 +13,9 @@ A call that runs once per item and reaches a query, as an adapter describes quer
 - a function passed by name to one of those, as `ids.map(loadUser)` passes `loadUser`.
 
 The query can be any number of calls away, in other files, through methods, interfaces and their implementations.
-`while` and `do…while` loops aren't counted: they poll or retry rather than walk items.
+`while` and `do…while` loops aren't counted: they poll or retry rather than walk items. Neither are loops that run as
+often whatever the data: a `for` loop with no condition, or one counting to a number the code gives or to a limit of
+attempts, as `i < maxAttempts`, and a loop over a list written in the code, as `for (const role of ["owner", "admin"])`.
 
 ```ts
 // users.ts

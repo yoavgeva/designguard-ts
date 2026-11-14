@@ -25,11 +25,11 @@ const db = `
   import { PrismaClient } from "@prisma/client";
   export const prisma = new PrismaClient();`;
 
-/** The findings in `src/main.ts`, as `line: message`. */
-function findings(rule: "unauthorizedWrites" | "unauthorizedReads", files: Record<string, string>): string[] {
+/** The findings in `src/main.ts`, or another file, as `line: message`. */
+function findings(rule: "unauthorizedWrites" | "unauthorizedReads", files: Record<string, string>, at = "src/main.ts"): string[] {
   const { program } = project({ ...prismaStub, ...routerStub, ...authStub, "src/db.ts": db, ...files });
-  const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
-  if (main === undefined) throw new Error("no src/main.ts");
+  const main = program.getSourceFiles().find((file) => file.fileName.endsWith(at));
+  if (main === undefined) throw new Error(`no ${at}`);
   return analyze(program, { adapters: [router, auth, prisma] })
     [rule](main)
     .map((finding) => `${String(main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1)}: ${finding.message}`);
@@ -162,6 +162,97 @@ describe("unauthorizedWrites", () => {
       "27: the POST /f/:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
     ]);
   });
+
+  it("passes handlers after middleware their router uses or is mounted behind, that is named for who may call or checks a secret, and on routers named for who may call", () => {
+    const update = `async (req) => prisma.user.update({ where: { id: req.params.id }, data: {} })`;
+    const files = {
+        "src/middleware.ts": `
+          import type { Request, Response } from "router";
+          export function requireAdmin(req: Request, res: Response, next: () => void) { next(); }
+          export function authenticate(req: Request, res: Response, next: () => void) { next(); }`,
+        "src/main.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          import { requireAdmin, authenticate } from "./middleware.js";
+          const shop = router();
+          shop.use(authenticate, requireAdmin);
+          shop.post("/products", ${update});
+          const api = router();
+          api.post("/early", ${update});
+          api.use(requireAdmin);
+          api.post("/late", ${update});
+          const app = router();
+          app.use("/admin", requireAdmin);
+          app.post("/admin/users", ${update});
+          app.post("/administrator", ${update});
+          app.post("/other", ${update});
+          const publicRouter = router();
+          publicRouter.post("/signup", ${update});
+          import { users } from "./users.js";
+          app.use("/users", requireAdmin, users);
+          import internal from "./internal.js";
+          import signedIn from "./signed-in.js";
+          import { apiKeyAuth, signIn } from "./keys.js";
+          app.use("/internal", apiKeyAuth, internal);
+          app.use("/me", signIn, signedIn);
+          import { requireRole, guard, logRequests } from "./factories.js";
+          app.post("/factory/a", requireRole("admin"), ${update});
+          app.post("/factory/b", guard(["admin"]), ${update});
+          app.post("/factory/c", logRequests("factory"), ${update});`,
+        "src/factories.ts": `
+          import type { Request, Response } from "router";
+          export function requireRole(role: string) {
+            return (req: Request, res: Response, next: () => void) => next();
+          }
+          export function guard(allowedRoles: string[]) {
+            return (req: Request, res: Response, next: () => void) => {
+              if (!allowedRoles.includes(req.user?.id ?? "")) throw new Error("403");
+              next();
+            };
+          }
+          export function logRequests(label: string) {
+            return (req: Request, res: Response, next: () => void) => next();
+          }`,
+        "src/keys.ts": `
+          import type { Request, Response } from "router";
+          export function apiKeyAuth(req: Request, res: Response, next: () => void) {
+            if (req.headers["x-api-key"] !== process.env.API_KEY) throw new Error("403");
+            next();
+          }
+          export function signIn(req: Request, res: Response, next: () => void) {
+            if (req.user === undefined) throw new Error("401");
+            next();
+          }`,
+        "src/internal.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          const internal = router();
+          internal.post("/:id", ${update});
+          export default internal;`,
+        "src/signed-in.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          const signedIn = router();
+          signedIn.post("/:id", ${update});
+          export default signedIn;`,
+        "src/users.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          export const users = router();
+          users.post("/:id", ${update});`,
+    };
+    expect(findings("unauthorizedWrites", files, "src/users.ts")).toEqual([]);
+    expect(findings("unauthorizedWrites", files, "src/internal.ts")).toEqual([]);
+    expect(findings("unauthorizedWrites", files, "src/signed-in.ts")).toEqual([
+      "5: the POST /:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+    expect(findings("unauthorizedWrites", files)).toEqual([
+      "9: the POST /early handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "15: the POST /administrator handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "16: the POST /other handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "29: the POST /factory/c handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+  });
 });
 
 describe("unauthorizedReads", () => {
@@ -282,6 +373,54 @@ describe("standard entry points", () => {
     ]);
     expect(findings("unauthorizedReads", { "src/main.ts": routes })).toEqual([
       "10: GET() reads a record by a key the request sends through prisma.user.findUnique(): nothing checks that the user asking may see it",
+    ]);
+  });
+
+  it("passes route handlers a wrapper checks for, by its name or the handler it returns, through other wrappers and variables too", () => {
+    expect(
+      findings("unauthorizedWrites", {
+        "src/api-auth.ts": `
+          import { getServerSession } from "auth";
+          type Handler = (request: Request, session: unknown) => Promise<Response>;
+          export function withAuth(allowedRoles: string[], handler: Handler) {
+            return async (request: Request) => {
+              const session = await getServerSession({});
+              if (session === null || !allowedRoles.includes(session.user.id)) return new Response(null, { status: 403 });
+              return handler(request, session);
+            };
+          }
+          export function withBackofficeAuth(handler: Handler) {
+            return withAuth(["ADMIN", "CONSULTANT"], handler);
+          }
+          export function withTiming(handler: Handler) {
+            return async (request: Request) => handler(request, undefined);
+          }
+          export function requirePermission(permission: string, handler: Handler) {
+            return handler;
+          }`,
+        "src/main.ts": `
+          import { prisma } from "./db.js";
+          import { withBackofficeAuth, withTiming, requirePermission } from "./api-auth.js";
+          export const DELETE = withBackofficeAuth(async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          });
+          export const PATCH = withTiming(withTiming(async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          }));
+          const putHandler = requirePermission("admin.settings", async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          });
+          export const PUT = withTiming(putHandler);
+          export const POST = withTiming(requirePermission("admin.settings", async (request: Request) => {
+            await prisma.user.update({ where: { id: "1" }, data: {} });
+            return Response.json({});
+          }));`,
+      }),
+    ).toEqual([
+      "9: PATCH() writes to the database through prisma.user.update() with nothing checking that the user asking may",
     ]);
   });
 });

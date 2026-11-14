@@ -89,7 +89,7 @@ export const routerStub = stubPackage(
    export interface Response { json(value: unknown): void }
    export type Handler = (req: Request, res: Response, next: () => void) => unknown;
    export interface RouterMatcher { (path: string, ...handlers: Handler[]): void }
-   export interface Router { get: RouterMatcher; post: RouterMatcher; delete: RouterMatcher }
+   export interface Router { get: RouterMatcher; post: RouterMatcher; delete: RouterMatcher; use(...handlers: (string | Handler)[]): void }
    export declare function router(): Router;`,
 );
 
@@ -103,7 +103,7 @@ export const router = defineAdapter({
   name: "router",
   packages: ["router"],
   entryPoints: [
-    { call: "Router.get", reads: true, parameters },
-    { call: "Router.{post,delete}", parameters },
+    { call: "Router.get", reads: true, parameters, middleware: "Router.use" },
+    { call: "Router.{post,delete}", parameters, middleware: "Router.use" },
   ],
 });

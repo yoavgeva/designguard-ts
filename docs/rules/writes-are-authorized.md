@@ -15,10 +15,17 @@ mutation, a React server function or a route handler's `POST`, that reaches a da
 - calls code that gets the user asking, as `auth()`, `getServerSession(authOptions)` or a `getCurrentUser()` of the
   project's own do;
 - calls code that checks permissions: a function named for a check, as `assertCan()`, `authorize()` or `isAdmin()`
-  are, or one an adapter names, as NestJS's `UseGuards` is;
+  are, one an adapter names, as NestJS's `UseGuards` is, or one asking a list of roles or permissions about the user,
+  as `allowedRoles.includes(session.user.role)` does;
 - runs after middleware or under a decorator that checks, as `requireAdmin`, tRPC's `use(isAdmin)`, `@Roles("admin")`
-  or `@UseGuards(...)` do;
-- reads a secret the request sends, as a token in an unsubscribe link or a webhook's signature, which proves it may.
+  or `@UseGuards(...)` do. Its middleware includes what its router `use()`s before it, as `router.use(requireAdmin)`,
+  what's given before the router where it's mounted, as `app.use("/admin", requireAdmin, adminRouter)`, and the
+  wrappers it's passed through, as `export const DELETE = withAdmin(handler)` and a `requirePermission("x", handler)`
+  kept in a variable. A wrapper or a middleware factory, as `requireRole("admin")`, counts by its name or by what the
+  function it returns does;
+- is registered on a router or builder named for who may call, as `publicRouter` and tRPC's `publicProcedure` are;
+- reads a secret the request sends, as a token in an unsubscribe link or a webhook's signature, which proves it may,
+  or runs after middleware that does, as one comparing an `x-api-key` header does.
 
 Handlers of requests that only ask to read, such as GET routes and tRPC queries, aren't flagged: what they write is
 the server's bookkeeping.
@@ -45,8 +52,10 @@ proves who is asking, not that they may change this record.
 
 ## Not seen
 
-Endpoints that URL rules in front of them authorize, and ones that are public by design, such as sign-up and log-in,
-pass through no code designguard sees: leave them out with `exclude`.
+Endpoints that URL rules in front of them authorize, as Next.js's `middleware.ts` does, and ones that are public by
+design, such as sign-up, log-in and contact forms, pass through no code designguard sees: leave them out with
+`exclude`. Next.js runs server functions without its middleware's matcher in mind, and Next.js recommends checking the
+user in each, so a server function that relies on it is worth the finding.
 
 ## Options
 

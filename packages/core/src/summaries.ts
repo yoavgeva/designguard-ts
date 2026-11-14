@@ -1,11 +1,14 @@
 import ts from "typescript";
 import { callee } from "./names.js";
+import { wordsOf } from "./words.js";
 import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from "./resolve.js";
 
 /**
  * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
  * loop, or the callback of an array method such as `map()`; a `while` loop polls or retries rather than walking
- * items, so it isn't one. A transaction is the function an adapter's transaction call runs.
+ * items, so it isn't one, and neither is a `for` loop with no condition, or one counting to a number the code gives
+ * or to a limit of attempts, nor a loop over a list written in the code, which run as often whatever the data. A transaction is the function an
+ * adapter's transaction call runs.
  */
 export interface Scope {
   readonly node: ts.Node;
@@ -154,7 +157,7 @@ function walk(
       const resolution = options.resolveAll || scoped || candidate ? resolveCall(program, checker, node, claims) : undefined;
       if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop, transaction });
       visit(node.expression, loop, transaction);
-      const perItem = resolution === undefined ? undefined : loopingMethod(node, resolution);
+      const perItem = resolution === undefined ? undefined : loopingMethod(checker, node, resolution);
       const spec = resolution === undefined ? undefined : transactions.bodyOf(resolution);
       const body = spec === "last" ? (node.arguments ?? []).length - 1 : spec;
       const opened = body === undefined ? undefined : { node, label: `${callee(node.expression)}()` };
@@ -173,7 +176,7 @@ function walk(
       return;
     }
     const label = STATEMENT_LOOPS[node.kind];
-    if (label !== undefined && isIterationStatement(node)) {
+    if (label !== undefined && isIterationStatement(node) && walksItems(checker, node)) {
       ts.forEachChild(node, (child) => {
         visit(child, child === node.statement ? { node, label } : loop, transaction);
       });
@@ -201,7 +204,7 @@ function isIterationStatement(node: ts.Node): node is ts.IterationStatement {
   return STATEMENT_LOOPS[node.kind] !== undefined;
 }
 
-function isFunctionWithBody(node: ts.Node): node is FunctionLike {
+export function isFunctionWithBody(node: ts.Node): node is FunctionLike {
   return ts.isFunctionLike(node) && (node as ts.FunctionLikeDeclaration).body !== undefined;
 }
 
@@ -216,10 +219,70 @@ export function isInlineCallback(node: FunctionLike): boolean {
 }
 
 /** The loop of a call to an array method that calls its callback once per item, such as `ids.map(...)`. */
-function loopingMethod(call: ts.CallLikeExpression, resolution: Resolution): Scope | undefined {
+function loopingMethod(checker: ts.TypeChecker, call: ts.CallLikeExpression, resolution: Resolution): Scope | undefined {
   if (resolution.kind !== "lib" || !LOOPING.test(resolution.name) || !ts.isCallExpression(call)) return undefined;
+  if (ts.isPropertyAccessExpression(call.expression) && isWrittenList(checker, call.expression.expression)) return undefined;
   const name = ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : resolution.name;
   return { node: call, label: `${name}()` };
+}
+
+/** Whether a loop statement walks items of the data, rather than retrying or going over what the code writes. */
+function walksItems(checker: ts.TypeChecker, loop: ts.IterationStatement): boolean {
+  if (ts.isForOfStatement(loop)) return !isWrittenList(checker, loop.expression);
+  if (!ts.isForStatement(loop)) return true;
+  const condition = loop.condition;
+  if (condition === undefined) return false;
+  const counted = ts.isBinaryExpression(condition) && COMPARISONS.has(condition.operatorToken.kind);
+  return !(counted && [condition.left, condition.right].some((side) => isWrittenNumber(checker, side) || isRetryLimit(side)));
+}
+
+/** The words a limit of attempts goes by, as `maxAttempts` and `MAX_RETRIES` do. */
+const RETRY_WORDS = new Set(["attempt", "attempts", "retry", "retries", "tries"]);
+
+function isRetryLimit(expression: ts.Expression): boolean {
+  const limit = withoutWrappers(expression);
+  const name = ts.isIdentifier(limit) ? limit.text : ts.isPropertyAccessExpression(limit) ? limit.name.text : "";
+  return wordsOf(name).some((word) => RETRY_WORDS.has(word));
+}
+
+const COMPARISONS = new Set([
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+/** A number written in the code, directly or in a `const`, as `5` and `MAX_ATTEMPTS = 5` are. */
+function isWrittenNumber(checker: ts.TypeChecker, expression: ts.Expression): boolean {
+  const value = withoutWrappers(expression);
+  return ts.isNumericLiteral(value) || (ts.isIdentifier(value) && ts.isNumericLiteral(constantOf(checker, value) ?? value));
+}
+
+/**
+ * A list whose items are all written in the code, as `[owner, admin]` is, directly or in a `const`: a loop over it
+ * runs as many times whatever the data. A spread, as `[owner, ...ids]` has, adds items from the data.
+ */
+function isWrittenList(checker: ts.TypeChecker, expression: ts.Expression): boolean {
+  const outer = withoutWrappers(expression);
+  const list = ts.isIdentifier(outer) ? constantOf(checker, outer) : outer;
+  return list !== undefined && ts.isArrayLiteralExpression(list) && !list.elements.some(ts.isSpreadElement);
+}
+
+/** The value a `const` is declared with, without parentheses or type assertions. */
+function constantOf(checker: ts.TypeChecker, name: ts.Identifier): ts.Expression | undefined {
+  const declaration = checker.getSymbolAtLocation(name)?.valueDeclaration;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
+  const constant = ts.isVariableDeclarationList(declaration.parent) && (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
+  return constant ? withoutWrappers(declaration.initializer) : undefined;
+}
+
+/** An expression without the parentheses and type assertions around it: `[a, b]` for `([a, b] as const)`. */
+function withoutWrappers(expression: ts.Expression): ts.Expression {
+  let inner = expression;
+  while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner) || ts.isSatisfiesExpression(inner) || ts.isTypeAssertionExpression(inner)) {
+    inner = inner.expression;
+  }
+  return inner;
 }
 
 /** A project function passed by name as an argument, as `ids.map(loadUser)` passes `loadUser`. */

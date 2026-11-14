@@ -34,18 +34,24 @@ const files = {
 const db = defineAdapter({ name: "db", packages: ["db"], effects: [{ on: "*.save", kind: "db.write" }, { on: "*.find", kind: "db.read" }], lookups: ["*.find"] });
 
 describe("hono adapter", () => {
-  it("finds an application's routes, with the middleware before them, and not its use()", () => {
+  it("finds an application's routes, with the middleware before them and what it use()s before them for their paths", () => {
     expect(
       entryPointsOf(hono, {
         files,
         code: `
-          import { Hono } from "hono";
+          import { Hono, type Context } from "hono";
           const app = new Hono();
-          app.use("*", async (c, next) => { await next(); });
+          async function requireAdmin(c: Context, next: () => Promise<void>) { await next(); }
+          app.use("/admin/*", requireAdmin);
           app.get("/posts", (c) => c.json([]));
-          app.post("/posts", async (c, next) => { await next(); }, (c) => c.json([]));`,
+          app.post("/posts", async (c, next) => { await next(); }, (c) => c.json([]));
+          app.delete("/admin/posts/:id", (c) => c.json([]));`,
       }),
-    ).toEqual(["5: the GET /posts handler (reads)", "6: the POST /posts handler, after inline middleware"]);
+    ).toEqual([
+      "6: the GET /posts handler (reads), built from app",
+      "7: the POST /posts handler, after inline middleware, built from app",
+      "8: the DELETE /admin/posts/:id handler, after requireAdmin, built from app",
+    ]);
   });
 
   it("reads the user asking from the context's variables, and what the request sends from c.req", () => {

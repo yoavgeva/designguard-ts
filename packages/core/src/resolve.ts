@@ -176,12 +176,16 @@ export function isProjectSource(file: ts.SourceFile): boolean {
   return !file.isDeclarationFile && !file.fileName.includes("/node_modules/");
 }
 
-/** The package a file under `node_modules` belongs to, with `@types/scope__name` read as `@scope/name`. */
+/**
+ * The package a file under `node_modules` belongs to, with `@types/scope__name` read as `@scope/name`. A dot folder
+ * holds packages as a scope does: Prisma 5 and 6 generate their client into `.prisma/client`.
+ */
 export function packageOf(fileName: string): string {
   const at = fileName.lastIndexOf("/node_modules/");
   if (at < 0) return "";
   const parts = fileName.slice(at + "/node_modules/".length).split("/");
-  const name = parts[0]?.startsWith("@") ? `${parts[0]}/${parts[1] ?? ""}` : (parts[0] ?? "");
+  const scoped = parts[0]?.startsWith("@") === true || parts[0]?.startsWith(".") === true;
+  const name = scoped ? `${parts[0] ?? ""}/${parts[1] ?? ""}` : (parts[0] ?? "");
   if (name.startsWith("@types/")) {
     const typed = name.slice("@types/".length);
     return typed.includes("__") ? `@${typed.replace("__", "/")}` : typed;
