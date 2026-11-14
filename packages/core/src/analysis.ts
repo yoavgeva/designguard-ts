@@ -428,6 +428,10 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       const function_ = middleware.function;
       if (function_ === undefined) continue;
       if (isRequirementName(nameOf(function_))) return `runs after ${nameOf(function_)}`;
+      // As an API key does: the request proves it may do what it asks. Middleware that only reads the user asking
+      // doesn't, since the handler may still write what they may not.
+      const secret = flowOf(checker, function_, entry.parameters, entry.decoratorsOf).readsSecret;
+      if (secret !== undefined) return `runs after ${nameOf(function_)}, which checks a secret the request sends: ${oneLine(secret.getText())}`;
       const check = effectsOf(function_).get("check");
       if (check !== undefined) return `runs after middleware that checks permissions through ${describe(check)}`;
     }

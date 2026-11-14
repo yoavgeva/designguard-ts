@@ -163,7 +163,7 @@ describe("unauthorizedWrites", () => {
     ]);
   });
 
-  it("passes handlers after middleware their router uses, for all its routes or a path they're under, and on routers named for who may call", () => {
+  it("passes handlers after middleware their router uses or is mounted behind, that is named for who may call or checks a secret, and on routers named for who may call", () => {
     const update = `async (req) => prisma.user.update({ where: { id: req.params.id }, data: {} })`;
     const files = {
         "src/middleware.ts": `
@@ -189,7 +189,34 @@ describe("unauthorizedWrites", () => {
           const publicRouter = router();
           publicRouter.post("/signup", ${update});
           import { users } from "./users.js";
-          app.use("/users", requireAdmin, users);`,
+          app.use("/users", requireAdmin, users);
+          import internal from "./internal.js";
+          import signedIn from "./signed-in.js";
+          import { apiKeyAuth, signIn } from "./keys.js";
+          app.use("/internal", apiKeyAuth, internal);
+          app.use("/me", signIn, signedIn);`,
+        "src/keys.ts": `
+          import type { Request, Response } from "router";
+          export function apiKeyAuth(req: Request, res: Response, next: () => void) {
+            if (req.headers["x-api-key"] !== process.env.API_KEY) throw new Error("403");
+            next();
+          }
+          export function signIn(req: Request, res: Response, next: () => void) {
+            if (req.user === undefined) throw new Error("401");
+            next();
+          }`,
+        "src/internal.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          const internal = router();
+          internal.post("/:id", ${update});
+          export default internal;`,
+        "src/signed-in.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          const signedIn = router();
+          signedIn.post("/:id", ${update});
+          export default signedIn;`,
         "src/users.ts": `
           import { router } from "router";
           import { prisma } from "./db.js";
@@ -197,6 +224,10 @@ describe("unauthorizedWrites", () => {
           users.post("/:id", ${update});`,
     };
     expect(findings("unauthorizedWrites", files, "src/users.ts")).toEqual([]);
+    expect(findings("unauthorizedWrites", files, "src/internal.ts")).toEqual([]);
+    expect(findings("unauthorizedWrites", files, "src/signed-in.ts")).toEqual([
+      "5: the POST /:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
     expect(findings("unauthorizedWrites", files)).toEqual([
       "9: the POST /early handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
       "15: the POST /administrator handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
