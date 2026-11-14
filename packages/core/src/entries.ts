@@ -177,11 +177,133 @@ function chainMiddleware(
       if (builderType !== undefined && checker.getTypeAtLocation(node).getSymbol() === builderType) builders.push(node.text);
       const symbol = aliased(checker, checker.getSymbolAtLocation(node));
       const declaration = symbol?.valueDeclaration;
+      if (symbol !== undefined && declaration !== undefined) {
+        const used = usedBefore(checker, symbol, declaration.getSourceFile(), call, spec, specs, resolve);
+        for (const use of used.reverse()) for (const argument of use.arguments) found.push(...middlewareOf(program, checker, argument, claims));
+        for (const before of mountedBehind(program, checker, symbol, spec, specs, resolve).reverse()) {
+          found.push(...middlewareOf(program, checker, before, claims));
+        }
+      }
       node = declaration !== undefined && ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined;
     } else node = undefined;
   }
   // Found from the registration outwards; they run from the start of the chain.
   return { middleware: found.reverse(), builders };
+}
+
+/**
+ * The calls that add middleware to a variable's routes before a registration, in order, as `router.use(authenticate)`
+ * does: those earlier in its file, or anywhere in the file that declares it when the registration is elsewhere, since
+ * that file runs first. A call given a path, as `app.use("/admin", requireAdmin)`, counts for the routes under it.
+ * Only a call made for what it does to the variable counts: one whose result is kept, as in
+ * `const adminProcedure = authedProcedure.use(isAdmin)`, makes a new builder and leaves the variable as it was.
+ */
+function usedBefore(
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol,
+  file: ts.SourceFile,
+  registration: ts.CallExpression,
+  spec: EntryPointSpec,
+  specs: EntrySpecs,
+  resolve: (call: ts.CallExpression) => Resolution,
+): MethodCall[] {
+  const route = registration.arguments[0];
+  const path = route !== undefined && ts.isStringLiteralLike(route) ? route.text : undefined;
+  const sameFile = file === registration.getSourceFile();
+  const name = lastSegment(spec.middleware ?? "");
+  return methodCalls(file).filter((call) => {
+    if (sameFile && call.getStart() >= registration.getStart()) return false;
+    if (!name.test(call.expression.name.text) || !isStatement(call)) return false;
+    if (aliased(checker, checker.getSymbolAtLocation(call.expression.expression)) !== symbol || !specs.matches(spec, spec.middleware ?? "", resolve(call))) return false;
+    const scope = call.arguments[0];
+    return scope === undefined || !ts.isStringLiteralLike(scope) || (path !== undefined && isUnder(path, scope.text));
+  });
+}
+
+/**
+ * The middleware given before a variable where it's mounted, as `requireAdmin` is in
+ * `app.use("/admin", requireAdmin, adminRouter)`: it runs before every route the variable registers. Mounts are found
+ * in any of the project's files.
+ */
+function mountedBehind(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol,
+  spec: EntryPointSpec,
+  specs: EntrySpecs,
+  resolve: (call: ts.CallExpression) => Resolution,
+): ts.Expression[] {
+  const name = lastSegment(spec.middleware ?? "");
+  const found: ts.Expression[] = [];
+  for (const [method, calls] of projectMethodCalls(program)) {
+    if (!name.test(method)) continue;
+    for (const call of calls) {
+      if (!isStatement(call)) continue;
+      const at = call.arguments.findIndex((argument) => ts.isIdentifier(argument) && aliased(checker, checker.getSymbolAtLocation(argument)) === symbol);
+      if (at > 0 && specs.matches(spec, spec.middleware ?? "", resolve(call))) found.push(...call.arguments.slice(0, at));
+    }
+  }
+  return found;
+}
+
+/** A call of a method on a variable, as `router.use(...)` is. */
+type MethodCall = ts.CallExpression & { readonly expression: ts.PropertyAccessExpression & { readonly expression: ts.Identifier } };
+
+const methodCallCache = new WeakMap<ts.SourceFile, MethodCall[]>();
+const projectMethodCallCache = new WeakMap<ts.Program, Map<string, MethodCall[]>>();
+
+function isMethodCall(node: ts.Node): node is MethodCall {
+  return ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression);
+}
+
+/** The calls in a file of a method on a variable, in order. */
+function methodCalls(file: ts.SourceFile): MethodCall[] {
+  let calls = methodCallCache.get(file);
+  if (calls === undefined) {
+    const found: MethodCall[] = [];
+    const visit = (node: ts.Node): void => {
+      if (isMethodCall(node)) found.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    calls = found;
+    methodCallCache.set(file, calls);
+  }
+  return calls;
+}
+
+/** The method calls on variables in all the project's own files, by the method's name. */
+function projectMethodCalls(program: ts.Program): Map<string, MethodCall[]> {
+  let byName = projectMethodCallCache.get(program);
+  if (byName === undefined) {
+    byName = new Map();
+    for (const file of program.getSourceFiles()) {
+      if (!isProjectSource(file)) continue;
+      for (const call of methodCalls(file)) {
+        const method = call.expression.name.text;
+        const calls = byName.get(method);
+        if (calls === undefined) byName.set(method, [call]);
+        else calls.push(call);
+      }
+    }
+    projectMethodCallCache.set(program, byName);
+  }
+  return byName;
+}
+
+/** A call made as a statement, alone or in a chain of calls on what it returns, as `app.use(a).use(b);` is. */
+function isStatement(call: ts.CallExpression): boolean {
+  let node: ts.Expression = call;
+  while (ts.isPropertyAccessExpression(node.parent) && ts.isCallExpression(node.parent.parent) && node.parent.parent.expression === node.parent) {
+    node = node.parent.parent;
+  }
+  return ts.isExpressionStatement(node.parent);
+}
+
+/** Whether a route is under a path middleware is given, by whole segments: `/admin/users` is under `/admin`. */
+function isUnder(route: string, path: string): boolean {
+  const prefix = path.replace(/\/?\*$/, "").replace(/\/$/, "");
+  return prefix === "" || route === prefix || route.startsWith(`${prefix}/`);
 }
 
 /**

@@ -22,8 +22,10 @@ const files = {
     export type RequestHandler = (req: Request, res: Response, next: () => void) => unknown;
     export interface IRouterMatcher<T> { (path: string, ...handlers: RequestHandler[]): T }
     export interface IRoute { get: IRouterMatcher<this>; post: IRouterMatcher<this> }
+    export interface IRouterHandler<T> { (...handlers: (RequestHandler | IRouter)[]): T; (path: string, ...handlers: (RequestHandler | IRouter)[]): T }
     export interface IRouter {
       get: IRouterMatcher<this>; post: IRouterMatcher<this>; put: IRouterMatcher<this>; delete: IRouterMatcher<this>;
+      use: IRouterHandler<this>;
       route(path: string): IRoute;
     }
     export interface Router extends IRouter {}
@@ -49,10 +51,34 @@ describe("express adapter", () => {
           router.route("/items").post((req, res) => res.json(req.body));`,
       }),
     ).toEqual([
-      "6: the GET /orders handler (reads)",
-      "7: the POST /orders handler, after requireAdmin",
-      "8: the DELETE /orders/:id handler",
+      "6: the GET /orders handler (reads), built from app",
+      "7: the POST /orders handler, after requireAdmin, built from app",
+      "8: the DELETE /orders/:id handler, built from router",
       "9: the post() handler",
+    ]);
+  });
+
+  it("finds the middleware a router use()s before its routes, and that given before it where it's mounted", () => {
+    expect(
+      entryPointsOf(express, {
+        files,
+        code: `
+          import express, { Router } from "express";
+          const app = express();
+          const admin = Router();
+          const shop = Router();
+          function authenticate(req: express.Request, res: express.Response, next: () => void) { next(); }
+          function requireAdmin(req: express.Request, res: express.Response, next: () => void) { next(); }
+          shop.post("/cart", (req, res) => res.json(req.body));
+          shop.use(authenticate);
+          shop.post("/orders", (req, res) => res.json(req.body));
+          admin.delete("/products/:id", (req, res) => res.json(req.params.id));
+          app.use("/admin", authenticate, requireAdmin, admin);`,
+      }),
+    ).toEqual([
+      "8: the POST /cart handler, built from shop",
+      "10: the POST /orders handler, after authenticate, built from shop",
+      "11: the DELETE /products/:id handler, after authenticate, requireAdmin, built from admin",
     ]);
   });
 

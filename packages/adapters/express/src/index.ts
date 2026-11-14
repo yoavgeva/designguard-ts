@@ -10,15 +10,15 @@ const parameters: ParameterSpec[] = [
 
 /**
  * Express 4 and 5: the routes an application, a router or a `route(path)` registers, with the middleware given
- * before the handler. Its types come from `@types/express`, which declares the routers in
- * `@types/express-serve-static-core`.
+ * before the handler, the middleware the router `use()`s before it, and that given before the router where it's
+ * mounted. Its types come from `@types/express`, which declares the routers in `@types/express-serve-static-core`.
  */
 export default defineAdapter({
   name: "express",
   packages: ["express", "express-serve-static-core"],
   versions: ">=4 <6",
   entryPoints: [
-    { call: "{IRouter,IRoute}.{get,head,options}", reads: true, parameters },
-    { call: "{IRouter,IRoute}.{post,put,patch,delete,all}", parameters },
+    { call: "{IRouter,IRoute}.{get,head,options}", reads: true, parameters, middleware: "{IRouter,Application}.use" },
+    { call: "{IRouter,IRoute}.{post,put,patch,delete,all}", parameters, middleware: "{IRouter,Application}.use" },
   ],
 });

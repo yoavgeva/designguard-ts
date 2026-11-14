@@ -25,11 +25,11 @@ const db = `
   import { PrismaClient } from "@prisma/client";
   export const prisma = new PrismaClient();`;
 
-/** The findings in `src/main.ts`, as `line: message`. */
-function findings(rule: "unauthorizedWrites" | "unauthorizedReads", files: Record<string, string>): string[] {
+/** The findings in `src/main.ts`, or another file, as `line: message`. */
+function findings(rule: "unauthorizedWrites" | "unauthorizedReads", files: Record<string, string>, at = "src/main.ts"): string[] {
   const { program } = project({ ...prismaStub, ...routerStub, ...authStub, "src/db.ts": db, ...files });
-  const main = program.getSourceFiles().find((file) => file.fileName.endsWith("src/main.ts"));
-  if (main === undefined) throw new Error("no src/main.ts");
+  const main = program.getSourceFiles().find((file) => file.fileName.endsWith(at));
+  if (main === undefined) throw new Error(`no ${at}`);
   return analyze(program, { adapters: [router, auth, prisma] })
     [rule](main)
     .map((finding) => `${String(main.getLineAndCharacterOfPosition(finding.node.getStart()).line + 1)}: ${finding.message}`);
@@ -160,6 +160,47 @@ describe("unauthorizedWrites", () => {
       }),
     ).toEqual([
       "27: the POST /f/:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+    ]);
+  });
+
+  it("passes handlers after middleware their router uses, for all its routes or a path they're under, and on routers named for who may call", () => {
+    const update = `async (req) => prisma.user.update({ where: { id: req.params.id }, data: {} })`;
+    const files = {
+        "src/middleware.ts": `
+          import type { Request, Response } from "router";
+          export function requireAdmin(req: Request, res: Response, next: () => void) { next(); }
+          export function authenticate(req: Request, res: Response, next: () => void) { next(); }`,
+        "src/main.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          import { requireAdmin, authenticate } from "./middleware.js";
+          const shop = router();
+          shop.use(authenticate, requireAdmin);
+          shop.post("/products", ${update});
+          const api = router();
+          api.post("/early", ${update});
+          api.use(requireAdmin);
+          api.post("/late", ${update});
+          const app = router();
+          app.use("/admin", requireAdmin);
+          app.post("/admin/users", ${update});
+          app.post("/administrator", ${update});
+          app.post("/other", ${update});
+          const publicRouter = router();
+          publicRouter.post("/signup", ${update});
+          import { users } from "./users.js";
+          app.use("/users", requireAdmin, users);`,
+        "src/users.ts": `
+          import { router } from "router";
+          import { prisma } from "./db.js";
+          export const users = router();
+          users.post("/:id", ${update});`,
+    };
+    expect(findings("unauthorizedWrites", files, "src/users.ts")).toEqual([]);
+    expect(findings("unauthorizedWrites", files)).toEqual([
+      "9: the POST /early handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "15: the POST /administrator handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "16: the POST /other handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
     ]);
   });
 });
