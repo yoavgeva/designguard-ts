@@ -105,7 +105,7 @@ describe("queriesInLoops", () => {
     expect(analyze(program, { adapters: [prisma] }).queriesInLoops(main)).toEqual([]);
   });
 
-  it("passes queries outside loops, polling loops, and loops that touch nothing outside the code", () => {
+  it("passes queries outside loops, polling and retry loops, and loops that touch nothing outside the code", () => {
     expect(
       findings({
         "src/users.ts": users,
@@ -119,6 +119,10 @@ describe("queriesInLoops", () => {
             let user = await loadUser("1");
             while (user === null) user = await loadUser("1");
             do user = await loadUser("1"); while (user === null);
+            for (let attempt = 0; ; attempt++) if (await loadUser(String(attempt)) === null) break;
+            const ATTEMPTS = 3;
+            for (let attempt = 0; attempt < ATTEMPTS; attempt++) await loadUser(String(attempt));
+            for (let attempt = 1; attempt <= 5; attempt++) await loadUser(String(attempt));
             return { first, labels, later };
           }`,
       }),
@@ -137,10 +141,12 @@ describe("queriesInLoops", () => {
             for (const role of roles) await loadUser(role);
             await Promise.all([owner, admin].map(loadUser));
             for (const id of [owner, ...ids]) await loadUser(id);
+            for (let i = 0; i < ids.length; i++) await loadUser(ids[i] ?? "");
           }`,
       }),
     ).toEqual([
       "8: queries the database once per item: the for…of loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+      "9: queries the database once per item: the for loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
     ]);
   });
 

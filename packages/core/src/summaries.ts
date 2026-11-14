@@ -5,8 +5,9 @@ import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from
 /**
  * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
  * loop, or the callback of an array method such as `map()`; a `while` loop polls or retries rather than walking
- * items, so it isn't one, and neither is a loop over a list written in the code, which runs as often whatever the
- * data. A transaction is the function an adapter's transaction call runs.
+ * items, so it isn't one, and neither is a `for` loop with no condition or one counting to a number the code gives,
+ * nor a loop over a list written in the code, which run as often whatever the data. A transaction is the function an
+ * adapter's transaction call runs.
  */
 export interface Scope {
   readonly node: ts.Node;
@@ -174,7 +175,7 @@ function walk(
       return;
     }
     const label = STATEMENT_LOOPS[node.kind];
-    if (label !== undefined && isIterationStatement(node) && !(ts.isForOfStatement(node) && isWrittenList(checker, node.expression))) {
+    if (label !== undefined && isIterationStatement(node) && walksItems(checker, node)) {
       ts.forEachChild(node, (child) => {
         visit(child, child === node.statement ? { node, label } : loop, transaction);
       });
@@ -224,27 +225,45 @@ function loopingMethod(checker: ts.TypeChecker, call: ts.CallLikeExpression, res
   return { node: call, label: `${name}()` };
 }
 
+/** Whether a loop statement walks items of the data, rather than retrying or going over what the code writes. */
+function walksItems(checker: ts.TypeChecker, loop: ts.IterationStatement): boolean {
+  if (ts.isForOfStatement(loop)) return !isWrittenList(checker, loop.expression);
+  if (!ts.isForStatement(loop)) return true;
+  const condition = loop.condition;
+  if (condition === undefined) return false;
+  const counted = ts.isBinaryExpression(condition) && COMPARISONS.has(condition.operatorToken.kind);
+  return !(counted && (isWrittenNumber(checker, condition.left) || isWrittenNumber(checker, condition.right)));
+}
+
+const COMPARISONS = new Set([
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+/** A number written in the code, directly or in a `const`, as `5` and `MAX_ATTEMPTS = 5` are. */
+function isWrittenNumber(checker: ts.TypeChecker, expression: ts.Expression): boolean {
+  const value = withoutWrappers(expression);
+  return ts.isNumericLiteral(value) || (ts.isIdentifier(value) && ts.isNumericLiteral(constantOf(checker, value) ?? value));
+}
+
 /**
  * A list whose items are all written in the code, as `[owner, admin]` is, directly or in a `const`: a loop over it
  * runs as many times whatever the data. A spread, as `[owner, ...ids]` has, adds items from the data.
  */
 function isWrittenList(checker: ts.TypeChecker, expression: ts.Expression): boolean {
-  const list = withoutWrappers(expression);
-  if (ts.isArrayLiteralExpression(list)) return isWritten(list);
-  if (!ts.isIdentifier(list)) return false;
-  const declaration = checker.getSymbolAtLocation(list)?.valueDeclaration;
-  if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return false;
-  const initializer = withoutWrappers(declaration.initializer);
-  return (
-    ts.isVariableDeclarationList(declaration.parent) &&
-    (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
-    ts.isArrayLiteralExpression(initializer) &&
-    isWritten(initializer)
-  );
+  const outer = withoutWrappers(expression);
+  const list = ts.isIdentifier(outer) ? constantOf(checker, outer) : outer;
+  return list !== undefined && ts.isArrayLiteralExpression(list) && !list.elements.some(ts.isSpreadElement);
 }
 
-function isWritten(list: ts.ArrayLiteralExpression): boolean {
-  return !list.elements.some(ts.isSpreadElement);
+/** The value a `const` is declared with, without parentheses or type assertions. */
+function constantOf(checker: ts.TypeChecker, name: ts.Identifier): ts.Expression | undefined {
+  const declaration = checker.getSymbolAtLocation(name)?.valueDeclaration;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
+  const constant = ts.isVariableDeclarationList(declaration.parent) && (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
+  return constant ? withoutWrappers(declaration.initializer) : undefined;
 }
 
 /** An expression without the parentheses and type assertions around it: `[a, b]` for `([a, b] as const)`. */
