@@ -2,7 +2,7 @@ import tseslint from "typescript-eslint";
 import designguard from "./packages/eslint-plugin/dist/index.js";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "eslint.config.js", "vitest.config.ts"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "eslint.config.js", "vitest.config.ts", "audit/**"] },
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
