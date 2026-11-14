@@ -23,7 +23,8 @@ for app in $apps; do
     [ -d /work/app ] || $fetch
     cd /work/app && echo \"== $name \$(git rev-parse --short HEAD 2>/dev/null || echo local)\"
     if [ -f yarn.lock ]; then YARN_ENABLE_SCRIPTS=0 YARN_ENABLE_IMMUTABLE_INSTALLS=0 CI=1 corepack yarn install
-    elif [ -f pnpm-lock.yaml ]; then CI=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm install --ignore-scripts --frozen-lockfile
+    elif [ -f pnpm-lock.yaml ]; then export CI=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+      corepack pnpm install --ignore-scripts --frozen-lockfile || corepack pnpm install --ignore-scripts --no-frozen-lockfile
     else CI=1 npm install --ignore-scripts --no-audit --no-fund; fi 2>&1 | tail -2
     [ -d packages/common ] && [ -f packages/common/tsconfig.build.json ] && npx tsc -p packages/common/tsconfig.build.json
     find . -name schema.prisma -not -path '*/node_modules/*' | while read -r schema; do
