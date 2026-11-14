@@ -123,6 +123,8 @@ describe("queriesInLoops", () => {
             const ATTEMPTS = 3;
             for (let attempt = 0; attempt < ATTEMPTS; attempt++) await loadUser(String(attempt));
             for (let attempt = 1; attempt <= 5; attempt++) await loadUser(String(attempt));
+            const options = { maxRetries: ids.length };
+            for (let i = 0; i < options.maxRetries; i++) await loadUser(String(i));
             return { first, labels, later };
           }`,
       }),

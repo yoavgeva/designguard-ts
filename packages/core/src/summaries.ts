@@ -1,12 +1,13 @@
 import ts from "typescript";
 import { callee } from "./names.js";
+import { wordsOf } from "./words.js";
 import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from "./resolve.js";
 
 /**
  * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
  * loop, or the callback of an array method such as `map()`; a `while` loop polls or retries rather than walking
- * items, so it isn't one, and neither is a `for` loop with no condition or one counting to a number the code gives,
- * nor a loop over a list written in the code, which run as often whatever the data. A transaction is the function an
+ * items, so it isn't one, and neither is a `for` loop with no condition, or one counting to a number the code gives
+ * or to a limit of attempts, nor a loop over a list written in the code, which run as often whatever the data. A transaction is the function an
  * adapter's transaction call runs.
  */
 export interface Scope {
@@ -232,7 +233,16 @@ function walksItems(checker: ts.TypeChecker, loop: ts.IterationStatement): boole
   const condition = loop.condition;
   if (condition === undefined) return false;
   const counted = ts.isBinaryExpression(condition) && COMPARISONS.has(condition.operatorToken.kind);
-  return !(counted && (isWrittenNumber(checker, condition.left) || isWrittenNumber(checker, condition.right)));
+  return !(counted && [condition.left, condition.right].some((side) => isWrittenNumber(checker, side) || isRetryLimit(side)));
+}
+
+/** The words a limit of attempts goes by, as `maxAttempts` and `MAX_RETRIES` do. */
+const RETRY_WORDS = new Set(["attempt", "attempts", "retry", "retries", "tries"]);
+
+function isRetryLimit(expression: ts.Expression): boolean {
+  const limit = withoutWrappers(expression);
+  const name = ts.isIdentifier(limit) ? limit.text : ts.isPropertyAccessExpression(limit) ? limit.name.text : "";
+  return wordsOf(name).some((word) => RETRY_WORDS.has(word));
 }
 
 const COMPARISONS = new Set([
