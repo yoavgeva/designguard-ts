@@ -7,8 +7,8 @@ import { type FunctionLike, isProjectSource, type Resolution, resolveCall } from
  * Code a call runs in: a loop, which runs it once per item, or a transaction. A loop is a `for`, `for…of` or `for…in`
  * loop, or the callback of an array method such as `map()`; a `while` loop polls or retries rather than walking
  * items, so it isn't one, and neither is a `for` loop with no condition, or one counting to a number the code gives
- * or to a limit of attempts, nor a loop over a list written in the code, which run as often whatever the data. A transaction is the function an
- * adapter's transaction call runs.
+ * or to a limit of attempts or passes, nor a loop over a list written in the code, which run as often whatever the
+ * data, nor one over the data a chunk at a time. A transaction is the function an adapter's transaction call runs.
  */
 export interface Scope {
   readonly node: ts.Node;
@@ -30,6 +30,16 @@ export interface CallSite {
   readonly loop: Scope | undefined;
   /** The innermost transaction the call runs in, if any. */
   readonly transaction: Scope | undefined;
+  /**
+   * Whether the call runs only when a cache misses or goes stale, so not each time the code around it runs: in a
+   * function named for a cache, as `getCachedKey()` and `refreshIfStale()` are; in a function given to a cache, as
+   * `memoize(key, load)` and `cache.wrap(key, load)` are; past a return of what a cache holds, as
+   * `if (cached) return cached;` is; as the fallback of a cache, as in `cache.get(key) ?? load(key)`; when a cache is
+   * stale, as under `if (this.isStale())`; or kept in a field it's made for, as `this.key ??= loadKey()` is. A
+   * function that takes arguments is cached by them, as React's `cache((id) => ...)` is, so calls with each item's own
+   * still miss: only one that takes none counts.
+   */
+  readonly cached: boolean;
 }
 
 /** What the walker needs to know of the adapters: which calls run a transaction, and the names those calls have. */
@@ -140,12 +150,12 @@ function walk(
 ): CallSite[] {
   const calls: CallSite[] = [];
   let current: Owner = owner;
-  const visit = (node: ts.Node, loop: Scope | undefined, transaction: Scope | undefined): void => {
+  const visit = (node: ts.Node, loop: Scope | undefined, transaction: Scope | undefined, cached: boolean): void => {
     if (node !== owner && isFunctionWithBody(node) && !isInlineCallback(node)) {
       if (options.nested === "descend") {
         const outer = current;
         current = node;
-        visit(node.body, undefined, undefined);
+        visit(node.body, undefined, undefined, startsCached(node));
         current = outer;
       }
       return;
@@ -155,12 +165,14 @@ function walk(
       const candidate = name !== undefined && (LOOPING_NAMES.has(name) || transactions.mightBe(name));
       const scoped = loop !== undefined || transaction !== undefined;
       const resolution = options.resolveAll || scoped || candidate ? resolveCall(program, checker, node, claims) : undefined;
-      if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop, transaction });
-      visit(node.expression, loop, transaction);
+      if (resolution !== undefined) calls.push({ owner: current, node, named: node.expression, resolution, loop, transaction, cached });
+      visit(node.expression, loop, transaction, cached);
       const perItem = resolution === undefined ? undefined : loopingMethod(checker, node, resolution);
       const spec = resolution === undefined ? undefined : transactions.bodyOf(resolution);
       const body = spec === "last" ? (node.arguments ?? []).length - 1 : spec;
       const opened = body === undefined ? undefined : { node, label: `${callee(node.expression)}()` };
+      // A function given to a cache runs only when the cache misses.
+      const caching = chainNames(node.expression).some(isCacheName);
       (node.arguments ?? []).forEach((argument, index) => {
         const inLoop = perItem ?? loop;
         const inTransaction = index === body ? opened : transaction;
@@ -168,30 +180,176 @@ function walk(
           options.resolveAll || inLoop !== undefined || inTransaction !== undefined
             ? passedFunction(program, checker, argument, claims)
             : undefined;
+        const loader = passed?.kind === "project" ? passed.targets[0] : ts.isArrowFunction(argument) || ts.isFunctionExpression(argument) ? argument : undefined;
+        const inCache = cached || (caching && loader?.parameters.length === 0);
         if (passed !== undefined) {
-          calls.push({ owner: current, node: argument, named: argument, resolution: passed, loop: inLoop, transaction: inTransaction });
+          calls.push({ owner: current, node: argument, named: argument, resolution: passed, loop: inLoop, transaction: inTransaction, cached: inCache });
         }
-        visit(argument, inLoop, inTransaction);
+        visit(argument, inLoop, inTransaction, inCache);
       });
+      return;
+    }
+    // What `if (this.isStale())` runs, it runs only when a cache has gone stale.
+    if (ts.isIfStatement(node)) {
+      visit(node.expression, loop, transaction, cached);
+      visit(node.thenStatement, loop, transaction, cached || mentions(node.expression, isStaleName));
+      if (node.elseStatement !== undefined) visit(node.elseStatement, loop, transaction, cached);
+      return;
+    }
+    // Past `if (cached) return cached;`, the code runs only when the cache misses.
+    if (ts.isBlock(node)) {
+      let missed = cached;
+      for (const statement of node.statements) {
+        visit(statement, loop, transaction, missed);
+        if (ts.isIfStatement(statement) && statement.elseStatement === undefined && returnsCached(statement.thenStatement)) missed = true;
+      }
+      return;
+    }
+    if (ts.isBinaryExpression(node) && (fallsBackFromCache(node) || memoizes(node, owner))) {
+      visit(node.left, loop, transaction, cached);
+      visit(node.right, loop, transaction, true);
       return;
     }
     const label = STATEMENT_LOOPS[node.kind];
     if (label !== undefined && isIterationStatement(node) && walksItems(checker, node)) {
       ts.forEachChild(node, (child) => {
-        visit(child, child === node.statement ? { node, label } : loop, transaction);
+        visit(child, child === node.statement ? { node, label } : loop, transaction, cached);
       });
       return;
     }
     ts.forEachChild(node, (child) => {
-      visit(child, loop, transaction);
+      visit(child, loop, transaction, cached);
     });
   };
   if (ts.isSourceFile(owner)) {
     ts.forEachChild(owner, (child) => {
-      visit(child, undefined, undefined);
+      visit(child, undefined, undefined, false);
     });
-  } else visit(owner.body, undefined, undefined);
+  } else visit(owner.body, undefined, undefined, startsCached(owner));
   return calls;
+}
+
+/** The words a cache goes by, as `cachedUser` and `memoize()` do. */
+const CACHE_WORDS = new Set(["cache", "cached", "caches", "caching", "memo", "memoize", "memoized", "memoizer", "memoise", "memoised"]);
+
+/** Whether a name is a cache's, or asks whether one is stale, as `cachedUser`, `memoize` and `refreshIfStale` are. */
+function isCacheName(name: string): boolean {
+  return wordsOf(name).some((word) => CACHE_WORDS.has(word)) || isStaleName(name);
+}
+
+/**
+ * Whether a name asks whether a cache is stale, as `isStale()`, `refreshIfStale()` and `isLocalCacheExpired` do:
+ * stale data, as `staleFiles` names, is no cache, and a check that a cache holds a value runs what follows on a hit.
+ */
+function isStaleName(name: string): boolean {
+  const words = wordsOf(name);
+  const stale = words.indexOf("stale");
+  if (stale >= 0 && (words[0] === "is" || words[stale - 1] === "if")) return true;
+  return words.some((word) => CACHE_WORDS.has(word)) && words.some((word) => word === "expired" || word === "stale");
+}
+
+/** The words a part of a list goes by, as `chunk(ids, 100)`, `batch` and `BATCH_SIZE` do. */
+const CHUNK_WORDS = new Set(["chunk", "chunks", "chunked", "batch", "batches", "batched"]);
+
+/** The words a list of parts goes by, as `batches` does: `batch` is one part, whose items a loop goes over one by one. */
+const CHUNKS_WORDS = new Set(["chunks", "chunked", "batches", "batched"]);
+
+function isChunkName(name: string): boolean {
+  return wordsOf(name).some((word) => CHUNK_WORDS.has(word));
+}
+
+/**
+ * Whether a function runs only when a cache misses, taking no arguments to be cached by: its own name says it reads a
+ * cache or refreshes one, as `getCachedKey()` and `refreshIfStale()` do, or it's written as what a cache loads, as
+ * `cache(async () => ...)` writes it.
+ */
+function startsCached(function_: FunctionLike): boolean {
+  if (function_.parameters.length > 0) return false;
+  const name = nameOf(function_);
+  if (isCacheName(name.slice(name.lastIndexOf(".") + 1))) return true;
+  const parent = function_.parent;
+  return isInlineCallback(function_) && (ts.isCallExpression(parent) || ts.isNewExpression(parent)) && chainNames(parent.expression).some(isCacheName);
+}
+
+/** Whether code names something a way it tells: a variable, a property or a method it calls. */
+function mentions(expression: ts.Node, named: (name: string) => boolean): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) && named(node.text)) found = true;
+    else ts.forEachChild(node, visit);
+  };
+  visit(expression);
+  return found;
+}
+
+/** The names along a callee, without its calls' arguments: `wrap`, `cacheManager` for `this.cacheManager.wrap`. */
+function chainNames(expression: ts.Expression): string[] {
+  const names: string[] = [];
+  let current = expression;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current)) {
+      names.push(current.name.text);
+      current = current.expression;
+    } else if (ts.isCallExpression(current) || ts.isNonNullExpression(current) || ts.isParenthesizedExpression(current)) {
+      current = current.expression;
+    } else {
+      if (ts.isIdentifier(current)) names.push(current.text);
+      return names;
+    }
+  }
+}
+
+/** A value that falls back on loading when a cache has none, as `cache.get(key) ?? load(key)` does. */
+function fallsBackFromCache(node: ts.BinaryExpression): boolean {
+  const operator = node.operatorToken.kind;
+  const fallback = operator === ts.SyntaxKind.QuestionQuestionToken || operator === ts.SyntaxKind.BarBarToken;
+  return fallback && mentions(node.left, isCacheName);
+}
+
+/** Whether a statement returns what a cache holds, as `return cached;` and `{ return cachedApp.id; }` do. */
+function returnsCached(statement: ts.Statement): boolean {
+  if (ts.isReturnStatement(statement)) return statement.expression !== undefined && mentions(statement.expression, isCacheName);
+  const last = ts.isBlock(statement) ? statement.statements[statement.statements.length - 1] : undefined;
+  return last !== undefined && returnsCached(last);
+}
+
+/**
+ * A value kept in the place a check looks in first, made only when that place is empty, as `this.key ??= loadKey()`
+ * and `if (this.key === undefined) this.key = loadKey();` make it.
+ */
+function memoizes(node: ts.BinaryExpression, owner: Owner): boolean {
+  const operator = node.operatorToken.kind;
+  if (operator === ts.SyntaxKind.QuestionQuestionEqualsToken || operator === ts.SyntaxKind.BarBarEqualsToken) return true;
+  const target = node.left;
+  if (operator !== ts.SyntaxKind.EqualsToken || !ts.isPropertyAccessExpression(target) || target.expression.kind !== ts.SyntaxKind.ThisKeyword) {
+    return false;
+  }
+  for (let inner: ts.Node = node; inner !== owner && !ts.isSourceFile(inner); inner = inner.parent) {
+    const parent = inner.parent;
+    if (ts.isIfStatement(parent) && parent.thenStatement === inner && readsField(parent.expression, target.name.text)) return true;
+  }
+  return false;
+}
+
+/** Whether an expression reads `this.<name>`. */
+function readsField(expression: ts.Expression, name: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword && node.name.text === name) found = true;
+    else ts.forEachChild(node, visit);
+  };
+  visit(expression);
+  return found;
+}
+
+/** Whether a statement always leaves the code around it: a `return`, a `throw`, or a block that ends in one. */
+export function exits(statement: ts.Statement): boolean {
+  if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) return true;
+  if (!ts.isBlock(statement)) return false;
+  const last = statement.statements[statement.statements.length - 1];
+  return last !== undefined && exits(last);
 }
 
 /** The last name of a callee: `map` for `ids.map`, `load` for `load`. */
@@ -221,23 +379,64 @@ export function isInlineCallback(node: FunctionLike): boolean {
 /** The loop of a call to an array method that calls its callback once per item, such as `ids.map(...)`. */
 function loopingMethod(checker: ts.TypeChecker, call: ts.CallLikeExpression, resolution: Resolution): Scope | undefined {
   if (resolution.kind !== "lib" || !LOOPING.test(resolution.name) || !ts.isCallExpression(call)) return undefined;
-  if (ts.isPropertyAccessExpression(call.expression) && isWrittenList(checker, call.expression.expression)) return undefined;
+  if (ts.isPropertyAccessExpression(call.expression)) {
+    const list = call.expression.expression;
+    if (isWrittenList(checker, list) || isChunkList(list)) return undefined;
+  }
   const name = ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : resolution.name;
   return { node: call, label: `${name}()` };
 }
 
-/** Whether a loop statement walks items of the data, rather than retrying or going over what the code writes. */
+/**
+ * Whether a loop statement walks items of the data, rather than retrying, going over what the code writes, or going
+ * over the data a chunk at a time, as `for (const batch of chunk(ids, 100))` and `i += BATCH_SIZE` do.
+ */
 function walksItems(checker: ts.TypeChecker, loop: ts.IterationStatement): boolean {
-  if (ts.isForOfStatement(loop)) return !isWrittenList(checker, loop.expression);
+  if (ts.isForOfStatement(loop)) {
+    const chunks = isChunkList(loop.expression) || mentions(loop.initializer, isChunkName);
+    return !isWrittenList(checker, loop.expression) && !chunks;
+  }
   if (!ts.isForStatement(loop)) return true;
   const condition = loop.condition;
   if (condition === undefined) return false;
-  const counted = ts.isBinaryExpression(condition) && COMPARISONS.has(condition.operatorToken.kind);
-  return !(counted && [condition.left, condition.right].some((side) => isWrittenNumber(checker, side) || isRetryLimit(side)));
+  const step = loop.incrementor;
+  const byChunk =
+    (loop.initializer !== undefined && mentions(loop.initializer, isChunkName)) ||
+    (step !== undefined && ts.isBinaryExpression(step) && step.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && mentions(step.right, isChunkName));
+  const limited = conjuncts(condition).some(
+    (part) =>
+      ts.isBinaryExpression(part) &&
+      COMPARISONS.has(part.operatorToken.kind) &&
+      [part.left, part.right].some((side) => isWrittenNumber(checker, side) || isRetryLimit(side)),
+  );
+  return !byChunk && !limited;
 }
 
-/** The words a limit of attempts goes by, as `maxAttempts` and `MAX_RETRIES` do. */
-const RETRY_WORDS = new Set(["attempt", "attempts", "retry", "retries", "tries"]);
+/** The parts a condition needs all of: `a`, `b` and `c` for `a && (b && c)`. */
+function conjuncts(condition: ts.Expression): ts.Expression[] {
+  const inner = withoutWrappers(condition);
+  return ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ? [...conjuncts(inner.left), ...conjuncts(inner.right)]
+    : [inner];
+}
+
+/**
+ * Whether a list holds parts of the data rather than its items: one named for them, as `batches` is, or made by a
+ * function named for chunking, as `chunk(ids, 100)` is, and its `entries()`.
+ */
+function isChunkList(expression: ts.Expression): boolean {
+  const list = withoutWrappers(expression);
+  if (ts.isCallExpression(list)) {
+    const callee = list.expression;
+    if (ts.isPropertyAccessExpression(callee) && ["entries", "values", "keys"].includes(callee.name.text)) return isChunkList(callee.expression);
+    return isChunkName(lastName(callee) ?? "");
+  }
+  const name = ts.isIdentifier(list) ? list.text : ts.isPropertyAccessExpression(list) ? list.name.text : "";
+  return wordsOf(name).some((word) => CHUNKS_WORDS.has(word));
+}
+
+/** The words a limit of attempts or passes goes by, as `maxAttempts`, `MAX_RETRIES` and `MAX_ROUNDS` do. */
+const RETRY_WORDS = new Set(["attempt", "attempts", "retry", "retries", "tries", "pass", "passes", "round", "rounds"]);
 
 function isRetryLimit(expression: ts.Expression): boolean {
   const limit = withoutWrappers(expression);
@@ -268,9 +467,11 @@ function isWrittenList(checker: ts.TypeChecker, expression: ts.Expression): bool
   return list !== undefined && ts.isArrayLiteralExpression(list) && !list.elements.some(ts.isSpreadElement);
 }
 
-/** The value a `const` is declared with, without parentheses or type assertions. */
+/** The value a `const` is declared with, here or in the module it's imported from, without parentheses or type assertions. */
 function constantOf(checker: ts.TypeChecker, name: ts.Identifier): ts.Expression | undefined {
-  const declaration = checker.getSymbolAtLocation(name)?.valueDeclaration;
+  let symbol = checker.getSymbolAtLocation(name);
+  if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+  const declaration = symbol?.valueDeclaration;
   if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
   const constant = ts.isVariableDeclarationList(declaration.parent) && (declaration.parent.flags & ts.NodeFlags.Const) !== 0;
   return constant ? withoutWrappers(declaration.initializer) : undefined;

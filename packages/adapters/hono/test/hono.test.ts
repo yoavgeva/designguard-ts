@@ -12,6 +12,7 @@ const files = {
        header(name: string): string | undefined;
        json<T = any>(): Promise<T>;
        valid(target: string): any;
+       raw: Request;
      }
      export interface Context<V = {}> {
        req: HonoRequest;
@@ -80,7 +81,13 @@ describe("hono adapter", () => {
             if (c.req.header("x-signature") !== process.env.SIGNING) return c.json({}, 401);
             await db.save({ id: "1" });
             return c.json({});
-          });`,
+          });
+          async function subscribe(request: Request) {
+            if (request.headers.get("authorization") !== process.env.TOKEN) return new Response(null, { status: 401 });
+            await db.save({ id: "1" });
+            return new Response(null);
+          }
+          app.post("/zapier/subscribe", async (c) => subscribe(c.req.raw));`,
       }),
     ).toEqual([
       "6: unauthorizedWrites: the DELETE /posts/:id handler writes to the database through db.save() with nothing checking that the user asking may",

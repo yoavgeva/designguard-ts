@@ -77,11 +77,14 @@ const CHECKING = new Set([
 const CHECKED = new Set(["access", "owner", "owns", "ownership", "role", "roles", "admin", "member", "membership", "staff", "superuser", "scope", "scopes"]);
 const ASKS = new Set(["has", "check", "require", "requires", "assert", "ensure", "verify", "validate", "is", "must", "can", "only", "with"]);
 
-/** Whether a function, method or decorator by this name checks what the user asking may do. */
+/**
+ * Whether a function, method or decorator by this name checks what the user asking may do, or the secret the request
+ * proves itself with, as `assertDashboardPassword` and `verifySignature` do.
+ */
 export function isCheckName(name: string): boolean {
   const words = wordsOf(name);
   if (words.some((word) => CHECKING.has(word))) return true;
-  return ASKS.has(words[0] ?? "") && words.slice(1).some((word) => CHECKED.has(word));
+  return ASKS.has(words[0] ?? "") && (words.slice(1).some((word) => CHECKED.has(word)) || isSecretName(words.slice(1).join(" ")));
 }
 
 /**

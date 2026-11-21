@@ -8,7 +8,13 @@ const load = async (name) => (await import(require.resolve(name))).default;
 const tseslint = await load("typescript-eslint");
 const designguard = await load("eslint-plugin-designguard");
 const names = ["prisma", "drizzle", "typeorm", "kysely", "express", "hono", "trpc", "nestjs", "authjs"];
-const adapters = await Promise.all(names.map((name) => load(`@designguard/adapter-${name}`)));
+const loaded = await Promise.all(names.map((name) => load(`@designguard/adapter-${name}`)));
+// FORKS="typeorm=@n8n/typeorm" points an adapter at a fork published under another name, whatever its version.
+const forks = (process.env.FORKS ?? "").split(",").filter(Boolean).map((fork) => fork.split("="));
+const adapters = [
+  ...loaded,
+  ...forks.map(([name, fork]) => ({ ...loaded[names.indexOf(name)], name: `${name}:${fork}`, packages: [fork], versions: undefined })),
+];
 const withDesignguard = process.env.DG === "1";
 
 export default [

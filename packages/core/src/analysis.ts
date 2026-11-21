@@ -11,6 +11,7 @@ import { flowOf } from "./flow.js";
 import { standards } from "./standards.js";
 import {
   type CallSite,
+  exits,
   type FunctionSummary,
   isFunctionWithBody,
   isInlineCallback,
@@ -162,9 +163,12 @@ type Owner = FunctionLike | ts.SourceFile;
 
 /**
  * What a call does that rules ask about: its effects, giving the user asking, checking what they may do, or loading
- * every row of a table.
+ * every row of a table; and `query`, a query it makes each time it runs, not only when a cache misses.
  */
-type Kind = EffectKind | "user" | "check" | "all";
+type Kind = EffectKind | "user" | "check" | "all" | "query";
+
+/** Whether a kind a function has is its caller's through a call: a query behind a cache isn't made each time. */
+const crosses = (site: CallSite, kind: Kind): boolean => !(site.cached && kind === "query");
 
 /**
  * The analysis reads code only as a question needs it: the loop calls of the file asked about, and the functions
@@ -209,6 +213,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     const kinds: Kind[] = [];
     const effect = direct(site);
     if (effect !== undefined) kinds.push(effect);
+    if ((effect === "db.read" || effect === "db.write") && !site.cached) kinds.push("query");
     const name = site.node === site.named ? undefined : lastName(site.named);
     const count = ts.isCallExpression(site.node) || ts.isNewExpression(site.node) ? (site.node.arguments ?? []).length : 0;
     if (matching(site, userMatchers) || (name !== undefined && isUserCall(name, count))) kinds.push("user");
@@ -299,6 +304,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
           if (site.resolution.kind !== "project") continue;
           for (const target of site.resolution.targets) {
             for (const [kind, depth] of depthsOf(target) ?? []) {
+              if (!crosses(site, kind)) continue;
               const current = own.get(kind);
               if (current === undefined || depth + 1 < current) {
                 own.set(kind, depth + 1);
@@ -330,7 +336,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
           own.set(kind, trace);
           return trace;
         }
-        if (site.resolution.kind !== "project") continue;
+        if (site.resolution.kind !== "project" || !crosses(site, kind)) continue;
         for (const target of site.resolution.targets) {
           if (depthsOf(target)?.get(kind) !== depth - 1) continue;
           const next = traceOf(target, kind);
@@ -370,6 +376,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         if (!isProject(target.getSourceFile())) continue;
         const effects = effectsOf(target);
         for (const [kind, trace] of effects) {
+          if (!crosses(site, kind)) continue;
           const depth = finalDepths.get(target)?.get(kind) ?? 0;
           if (found.has(kind) && (nearest.get(kind) ?? -1) <= depth) continue;
           found.set(kind, { site, next: trace });
@@ -448,6 +455,8 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       const check = effectsOfCall(site).get("check");
       if (check !== undefined) return `checks permissions through ${describe(check)}`;
     }
+    const guard = permissionGuard(entry.handler);
+    if (guard !== undefined) return `stops unless ${oneLine(guard.getText())}`;
     // A name can state who may call a handler, as `requireAdmin` and `publicProcedure` do.
     for (const builder of entry.builders) if (isRequirementName(builder)) return `is built from ${builder}`;
     for (const middleware of entry.middleware) {
@@ -469,7 +478,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
     for (const call of entry.decorators) {
       const name = lastName(call.expression);
       if (name !== undefined && isRequirementName(name)) return `has @${name}()`;
-      const site: CallSite = { owner: entry.handler, node: call, named: call.expression, resolution: resolveCall(program, checker, call, claims), loop: undefined, transaction: undefined };
+      const site: CallSite = { owner: entry.handler, node: call, named: call.expression, resolution: resolveCall(program, checker, call, claims), loop: undefined, transaction: undefined, cached: false };
       const check = effectsOfCall(site).get("check");
       if (check !== undefined) return `has @${callee(call.expression)}(), which checks permissions through ${describe(check)}`;
     }
@@ -766,8 +775,7 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
       const findings: Finding[] = [];
       for (const site of scoped(file)) {
         if (site.loop === undefined) continue;
-        const found = effectsOfCall(site);
-        const trace = found.get("db.read") ?? found.get("db.write");
+        const trace = effectsOfCall(site).get("query");
         if (trace !== undefined) {
           findings.push({
             node: site.node,
@@ -1176,6 +1184,23 @@ function aggregates(call: ts.CallExpression, names: RegExp): boolean {
 const ASKING_LISTS = new Set(["includes", "has", "some", "every", "indexOf", "find", "findIndex"]);
 
 /** A call asking a list of roles or permissions about something, as `allowedRoles.includes(user.role)` does. */
+/**
+ * The condition of the first `if` in a function that leaves it when a value named for a permission says so, as
+ * `if (!isAllowed) throw ...` and `if (!canEdit) return forbidden();` do.
+ */
+function permissionGuard(function_: FunctionLike): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const named = (node: ts.Node): boolean =>
+    ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) && isCheckName(node.text)) || ts.forEachChild(node, named) === true;
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined || (node !== function_ && isFunctionWithBody(node))) return;
+    if (ts.isIfStatement(node) && exits(node.thenStatement) && named(node.expression)) found = node.expression;
+    else ts.forEachChild(node, visit);
+  };
+  visit(function_.body);
+  return found;
+}
+
 function asksPermissionList(call: ts.Node): boolean {
   if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression) || !ASKING_LISTS.has(call.expression.name.text)) return false;
   const list = lastName(call.expression.expression);

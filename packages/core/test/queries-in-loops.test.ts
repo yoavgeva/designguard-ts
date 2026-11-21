@@ -152,6 +152,170 @@ describe("queriesInLoops", () => {
     ]);
   });
 
+  it("passes loops over chunks of the data, which make one query per chunk to keep each small", () => {
+    expect(
+      findings({
+        "src/users.ts": users,
+        "src/main.ts": `
+          import { loadUser } from "./users.js";
+          declare function chunk<T>(items: readonly T[], size: number): T[][];
+          const BATCH_SIZE = 100;
+          export async function show(ids: string[], groups: string[][]) {
+            for (const batch of chunk(ids, 100)) await loadUser(batch.join());
+            const batches = chunk(ids, 50);
+            for (const [index, part] of batches.entries()) await loadUser(part.join() + String(index));
+            await Promise.all(chunk(ids, 10).map((part) => loadUser(part.join())));
+            for (let i = 0; i < ids.length; i += BATCH_SIZE) await loadUser(ids.slice(i, i + BATCH_SIZE).join());
+            for (const group of groups) await loadUser(group.join());
+            for (let i = 0; i < ids.length; i += 2) await loadUser(ids[i] ?? "");
+            for (const batch of chunk(ids, 100)) await Promise.all(batch.map((id) => loadUser(id)));
+            for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+              const idChunk = ids.slice(i, i + BATCH_SIZE);
+              await Promise.all(idChunk.map(loadUser));
+            }
+          }`,
+      }),
+    ).toEqual([
+      "11: queries the database once per item: the for…of loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+      "12: queries the database once per item: the for loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+      "13: queries the database once per item: map() calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+      "16: queries the database once per item: map() calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+    ]);
+  });
+
+  it("passes loops that count passes or rounds to a limit the code sets, wherever it's declared", () => {
+    expect(
+      findings({
+        "src/users.ts": users,
+        "src/limits.ts": "export const MAX_PASSES = 3;",
+        "src/main.ts": `
+          import { loadUser } from "./users.js";
+          import { MAX_PASSES } from "./limits.js";
+          const MAX_ROUNDS = 3;
+          export async function show(ids: string[], ready: boolean) {
+            for (let pass = 1; pass <= MAX_PASSES; pass++) await loadUser(String(pass));
+            let pending = ids;
+            for (let round = 0; round < MAX_ROUNDS && pending.length > 0; round++) {
+              await loadUser(pending[0] ?? "");
+              pending = pending.slice(1);
+            }
+            for (let i = 0; i < ids.length && ready; i++) await loadUser(ids[i] ?? "");
+          }`,
+      }),
+    ).toEqual([
+      "12: queries the database once per item: the for loop calls loadUser(), which reaches prisma.user.findUnique() (src/users.ts:5)",
+    ]);
+  });
+
+  it("passes queries that run only when a cache misses or goes stale, and flags look-alikes that run every time", () => {
+    expect(
+      findings({
+        "src/keys.ts": `
+          import { PrismaClient } from "@prisma/client";
+          const prisma = new PrismaClient();
+          declare function memoize<T>(key: string, load: () => Promise<T>): Promise<T>;
+          declare function cache<F extends Function>(load: F): F;
+          const local = new Map<string, unknown>();
+          const memo = new Map<string, unknown>();
+          export const userById = cache((id: string) => prisma.user.findUnique({ where: { id } }));
+          export const allUsers = cache(async () => prisma.user.findMany());
+          export class Keys {
+            private current: Promise<unknown> | undefined;
+            private first: Promise<unknown> | undefined;
+            private refreshedAt = 0;
+            async currentKey() {
+              if (this.current === undefined) this.current = prisma.user.findMany();
+              return this.current;
+            }
+            async firstKey() {
+              return (this.first ??= prisma.user.findMany());
+            }
+            async keyFor(id: string) {
+              return memoize(id, () => prisma.user.findUnique({ where: { id } }));
+            }
+            async lookup(id: string) {
+              const cached = local.get(id);
+              if (cached !== undefined) return cached;
+              return prisma.user.findUnique({ where: { id } });
+            }
+            async peek(id: string) {
+              return memo.get(id) ?? prisma.user.findUnique({ where: { id } });
+            }
+            isStale() {
+              return Date.now() - this.refreshedAt > 60_000;
+            }
+            isCacheExpired() {
+              return this.isStale();
+            }
+            hasAccess() {
+              if (this.isStale()) void this.refresh();
+              return true;
+            }
+            private async refresh() {
+              this.refreshedAt = Date.now();
+              await prisma.user.findMany();
+            }
+            async getCachedCount() {
+              return prisma.user.findMany();
+            }
+            async reload(id: string) {
+              if (id.length > 0) this.current = prisma.user.findUnique({ where: { id } });
+              return this.current;
+            }
+            async find(id: string) {
+              const found = local.get(id);
+              if (found !== undefined) return found;
+              return prisma.user.findUnique({ where: { id } });
+            }
+            async getCachedUser(id: string) {
+              return prisma.user.findUnique({ where: { id } });
+            }
+            async signWith(id: string, credential: { certCache?: string }) {
+              if (!credential.certCache) throw new Error("no certificate");
+              return prisma.user.findUnique({ where: { id } });
+            }
+            async renderWith(id: string, credential: { certCache?: string }) {
+              if (credential.certCache) await prisma.user.findUnique({ where: { id } });
+            }
+          }`,
+        "src/main.ts": `
+          import { allUsers, Keys, userById } from "./keys.js";
+          export async function sign(ids: string[], keys: Keys) {
+            for (const id of ids) {
+              await keys.currentKey();
+              await keys.firstKey();
+              await keys.keyFor(id);
+              await keys.lookup(id);
+              await keys.peek(id);
+              keys.hasAccess();
+              await keys.getCachedCount();
+              await keys.reload(id);
+              await keys.find(id);
+              await keys.getCachedUser(id);
+              await userById(id);
+              await allUsers();
+              await keys.signWith(id, {});
+              await keys.renderWith(id, {});
+            }
+          }
+          declare const staleIds: string[];
+          declare const store: Keys;
+          export async function purgeStale() {
+            if (staleIds.length === 0) return;
+            for (const id of staleIds) await store.find(id);
+          }`,
+      }),
+    ).toEqual([
+      "12: queries the database once per item: the for…of loop calls keys.reload(), which reaches prisma.user.findUnique() (src/keys.ts:50)",
+      "13: queries the database once per item: the for…of loop calls keys.find(), which reaches prisma.user.findUnique() (src/keys.ts:56)",
+      "14: queries the database once per item: the for…of loop calls keys.getCachedUser(), which reaches prisma.user.findUnique() (src/keys.ts:59)",
+      "15: queries the database once per item: the for…of loop calls userById(), which reaches prisma.user.findUnique() (src/keys.ts:8)",
+      "17: queries the database once per item: the for…of loop calls keys.signWith(), which reaches prisma.user.findUnique() (src/keys.ts:63)",
+      "18: queries the database once per item: the for…of loop calls keys.renderWith(), which reaches prisma.user.findUnique() (src/keys.ts:66)",
+      "25: queries the database once per item: the for…of loop calls store.find(), which reaches prisma.user.findUnique() (src/keys.ts:56)",
+    ]);
+  });
+
   it("names the shortest way to a query, ties by the first call, whatever was asked before", () => {
     expect(
       findings({
