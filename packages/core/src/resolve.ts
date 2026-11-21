@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import ts from "typescript";
 
 /** A function-like declaration with a body: code the engine can read. */
@@ -40,7 +42,7 @@ export function resolveCall(
   const claimed = claims(file.fileName);
   if (claimed !== undefined) return { kind: "dependency", package: claimed, name: name(), declaration };
   if (!isProjectSource(file)) {
-    return { kind: "dependency", package: packageOf(file.fileName), name: name(), declaration };
+    return { kind: "dependency", package: packageOf(file.fileName) || workspacePackageOf(program, file.fileName), name: name(), declaration };
   }
   const targets = implementations(program, checker, declaration);
   return targets.length > 0 ? { kind: "project", targets } : { kind: "unresolved", reason: "abstract" };
@@ -174,6 +176,34 @@ function nameOfSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): string {
  */
 export function isProjectSource(file: ts.SourceFile): boolean {
   return !file.isDeclarationFile && !file.fileName.includes("/node_modules/");
+}
+
+const manifests = new Map<string, string | undefined>();
+
+/**
+ * The package a declaration file outside `node_modules` belongs to, by the nearest `package.json` that isn't the
+ * project's own: a workspace package the project uses through the types it builds, as `@n8n/db` and a fork such as
+ * `@n8n/typeorm` are. "" for the project's own declarations.
+ */
+function workspacePackageOf(program: ts.Program, fileName: string): string {
+  const config = program.getCompilerOptions().configFilePath;
+  const root = typeof config === "string" ? dirname(config) : program.getCurrentDirectory();
+  for (let folder = dirname(fileName); folder !== dirname(folder); folder = dirname(folder)) {
+    if (root === folder || root.startsWith(`${folder}/`)) return "";
+    if (!manifests.has(folder)) {
+      let name: string | undefined;
+      try {
+        const manifest = JSON.parse(readFileSync(join(folder, "package.json"), "utf8")) as { name?: unknown };
+        name = typeof manifest.name === "string" ? manifest.name : undefined;
+      } catch {
+        name = undefined;
+      }
+      manifests.set(folder, name);
+    }
+    const name = manifests.get(folder);
+    if (name !== undefined) return name;
+  }
+  return "";
 }
 
 /**

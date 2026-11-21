@@ -144,7 +144,9 @@ Calls named for the user asking, as `getCurrentUser()` and `auth()` are, and for
 and `isAdmin()` are, count without an adapter.
 
 Patterns use `*` for anything and `{a,b}` for either. A project can describe its own wrappers the same way, with a
-local adapter in its ESLint config. `rolesOf` from `@designguard/adapter-kit` shows what an adapter makes of each
+local adapter in its ESLint config. A fork published under another name takes the original's adapter with its own
+name and versions, as `{ ...typeorm, packages: ["@acme/typeorm"], versions: ">=1" }` does. A package of the project's
+own workspace that it uses through the types it builds goes by the name in its `package.json`. `rolesOf` from `@designguard/adapter-kit` shows what an adapter makes of each
 call in a sample, with the qualified name its patterns must match:
 
 ```ts

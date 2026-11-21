@@ -100,7 +100,8 @@ describe("unauthorizedWrites", () => {
             authorize(user, "archive");
             await prisma.user.update({ where: { id }, data: {} });
           }
-          export async function assertCanEdit(id: string) {}`,
+          export async function assertCanEdit(id: string) {}
+          export async function assertDashboardPassword(dashboard: { password: string | null }) {}`,
         "src/middleware.ts": `
           import type { Request, Response } from "router";
           export function requireAdmin(req: Request, res: Response, next: () => void) { next(); }
@@ -112,8 +113,9 @@ describe("unauthorizedWrites", () => {
           import { router } from "router";
           import { prisma } from "./db.js";
           import { getCurrentUser, sessionOf } from "./session.js";
-          import { archive, assertCanEdit } from "./archive.js";
+          import { archive, assertCanEdit, assertDashboardPassword } from "./archive.js";
           import { requireAdmin, authenticate } from "./middleware.js";
+          const RANGES = ["10.0.", "192.168."];
           const app = router();
           app.post("/a/:id", async (req) => {
             await getCurrentUser();
@@ -156,10 +158,25 @@ describe("unauthorizedWrites", () => {
           });
           app.post("/workspaces/:id", async (req) => {
             await prisma.user.update({ where: { id: req.params.id, workspaceId: req.workspace?.id }, data: {} });
+          });
+          app.post("/postback/:id", async (req) => {
+            const isAllowed = RANGES.some((range) => String(req.headers["x-forwarded-for"]).startsWith(range));
+            if (!isAllowed) throw new Error("403");
+            await prisma.user.update({ where: { id: req.params.id }, data: {} });
+          });
+          app.post("/dashboards/:id", async (req) => {
+            await assertDashboardPassword({ password: null });
+            await prisma.user.update({ where: { id: req.params.id }, data: {} });
+          });
+          app.post("/g/:id", async (req) => {
+            const isEmpty = RANGES.length === 0;
+            if (isEmpty) throw new Error("400");
+            await prisma.user.update({ where: { id: req.params.id }, data: {} });
           });`,
       }),
     ).toEqual([
-      "27: the POST /f/:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "28: the POST /f/:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
+      "63: the POST /g/:id handler writes to the database through prisma.user.update() with nothing checking that the user asking may",
     ]);
   });
 

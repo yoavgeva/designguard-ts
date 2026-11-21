@@ -11,12 +11,16 @@ mutation, a React server function or a route handler's `POST`, that reaches a da
 
 - reads the user asking: from its request or context, as `req.user`, `ctx.session` or `c.get("user")` do, or as a
   parameter, as NestJS's `@CurrentUser() user` is;
-- gives the user asking, or its context, to the code it calls, which can read them there;
+- gives the user asking, or its context, to the code it calls, which can read them there: the request itself
+  included, as Hono's `c.req.raw` is;
 - calls code that gets the user asking, as `auth()`, `getServerSession(authOptions)` or a `getCurrentUser()` of the
   project's own do;
 - calls code that checks permissions: a function named for a check, as `assertCan()`, `authorize()` or `isAdmin()`
-  are, one an adapter names, as NestJS's `UseGuards` is, or one asking a list of roles or permissions about the user,
-  as `allowedRoles.includes(session.user.role)` does;
+  are, or for checking a secret, as `verifySignature()` and `assertDashboardPassword()` are, one an adapter names, as
+  NestJS's `UseGuards` is, or one asking a list of roles or permissions about the user, as
+  `allowedRoles.includes(session.user.role)` does;
+- stops unless a value named for a permission allows it, as `if (!isAllowed) throw ...` and
+  `if (!canEdit) return forbidden();` do;
 - runs after middleware or under a decorator that checks, as `requireAdmin`, tRPC's `use(isAdmin)`, `@Roles("admin")`
   or `@UseGuards(...)` do. Its middleware includes what its router `use()`s before it, as `router.use(requireAdmin)`,
   what's given before the router where it's mounted, as `app.use("/admin", requireAdmin, adminRouter)`, and the
@@ -54,7 +58,7 @@ proves who is asking, not that they may change this record.
 
 Endpoints that URL rules in front of them authorize, as Next.js's `middleware.ts` does, and ones that are public by
 design, such as sign-up, log-in and contact forms, pass through no code designguard sees: leave them out with
-`exclude`. Next.js runs server functions without its middleware's matcher in mind, and Next.js recommends checking the
+`exclude`. So do checks of what Next.js's `cookies()` and `headers()` give, which aren't read as the request's. Next.js runs server functions without its middleware's matcher in mind, and Next.js recommends checking the
 user in each, so a server function that relies on it is worth the finding.
 
 ## Options

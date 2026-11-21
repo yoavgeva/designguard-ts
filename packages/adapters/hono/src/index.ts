@@ -1,10 +1,13 @@
 import { defineAdapter, type ParameterSpec } from "@designguard/core";
 
 // A handler's context holds the user asking, as `c.get("user")` and `c.var.user` give it, and what the request
-// sends, through `c.req`.
+// sends, through `c.req`. `c.req.raw` is the request itself, the web standard `Request`, which code it's given can read
+// the user asking from as a handler can.
 const parameters: ParameterSpec[] = [
   { at: 0, holds: "context" },
   { at: 0, path: ["req", "{json(),param(),query(),queries(),valid(),parseBody(),formData(),text(),arrayBuffer(),blob(),header()}"], holds: "input" },
+  { at: 0, path: ["req", "raw"], holds: "context" },
+  { at: 0, path: ["req", "raw", "{json(),formData(),text(),arrayBuffer(),blob(),body,url,headers}"], holds: "input" },
 ];
 
 /**

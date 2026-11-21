@@ -130,6 +130,26 @@ describe("resolveCall", () => {
     });
   });
 
+  it("names a workspace package typed by what it builds by its package.json, as a dependency, not the project's own", () => {
+    expect(
+      resolutions(
+        {
+          "packages/orm/package.json": JSON.stringify({ name: "@acme/orm", types: "dist/index.d.ts" }),
+          "packages/orm/dist/index.d.ts": "export declare class Repo { find(): Promise<object[]> }",
+          "src/env.d.ts": "declare function loadConfig(): Promise<object>;",
+          "src/main.ts": `
+            import { Repo } from "@acme/orm";
+            new Repo().find();
+            loadConfig();`,
+        },
+        { "node_modules/@acme/orm": "packages/orm" },
+      ),
+    ).toEqual({
+      "new Repo().find": { kind: "dependency", package: "@acme/orm", name: "Repo.find" },
+      loadConfig: { kind: "dependency", package: "", name: "loadConfig" },
+    });
+  });
+
   it("follows calls into a workspace package linked into node_modules as the project's own code", () => {
     expect(
       resolutions(
