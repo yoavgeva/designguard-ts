@@ -1,5 +1,6 @@
 import type { TSESLint } from "@typescript-eslint/utils";
 import { noIoInTransactions } from "./rules/no-io-in-transactions.js";
+import { noLifecycleLeaks } from "./rules/no-lifecycle-leaks.js";
 import { noLostUpdates } from "./rules/no-lost-updates.js";
 import { noMassAssignment } from "./rules/no-mass-assignment.js";
 import { noQueriesInLoops } from "./rules/no-queries-in-loops.js";
@@ -10,6 +11,7 @@ import { writesAreAuthorized } from "./rules/writes-are-authorized.js";
 
 const rules = {
   "no-io-in-transactions": noIoInTransactions,
+  "no-lifecycle-leaks": noLifecycleLeaks,
   "no-lost-updates": noLostUpdates,
   "no-mass-assignment": noMassAssignment,
   "no-queries-in-loops": noQueriesInLoops,
@@ -26,7 +28,7 @@ const plugin = {
 };
 
 /** The rules worth holding any project to. */
-const recommended = ["no-io-in-transactions", "no-queries-in-loops"] as const;
+const recommended = ["no-io-in-transactions", "no-lifecycle-leaks", "no-queries-in-loops"] as const;
 
 plugin.configs.recommended = {
   plugins: { designguard: plugin },

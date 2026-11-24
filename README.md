@@ -38,6 +38,7 @@ export default tseslint.config(
 |---|---|---|
 | [`no-queries-in-loops`](docs/rules/no-queries-in-loops.md) | a database query made once per item of a loop, directly or through other functions: N+1 | ✓ |
 | [`no-io-in-transactions`](docs/rules/no-io-in-transactions.md) | HTTP requests, mail and messages inside a database transaction | ✓ |
+| [`no-lifecycle-leaks`](docs/rules/no-lifecycle-leaks.md) | a listener, interval, observer or connection a LiveView hook or custom element starts and never stops when it leaves the page | ✓ |
 | [`writes-are-authorized`](docs/rules/writes-are-authorized.md) | a request handler that writes to the database with nothing checking that the user asking may | |
 | [`reads-are-authorized`](docs/rules/reads-are-authorized.md) | a request handler that reads a record by a key the request sends with nothing checking that the user asking may see it | |
 | [`no-mass-assignment`](docs/rules/no-mass-assignment.md) | a request handler that saves what the request sends as it is, when it can set `role`, an owner or a verified flag | |
@@ -77,9 +78,10 @@ existing code, ESLint's [bulk suppressions](https://eslint.org/docs/latest/use/s
 
 ## Adapters
 
-designguard's core knows only the language and the platform: `fetch`, Node's network, file and process modules, and
+designguard's core knows only the language and the platform: `fetch`, Node's network, file and process modules,
 where requests come in on the web's own terms: React's server functions (`"use server"`) and route handlers, exported
-functions named for an HTTP method that take a `Request`. Everything a library does comes from its **adapter**, data
+functions named for an HTTP method that take a `Request`, and the browser's listeners, intervals, observers,
+connections and workers, and custom elements. Everything a library does comes from its **adapter**, data
 that names the library's calls and what they do. Adapters are listed in `settings.designguard.adapters`; nothing is
 detected for you.
 
@@ -94,6 +96,7 @@ detected for you.
 | `@designguard/adapter-trpc` | tRPC 10 and 11 queries and mutations, and the middleware of their procedures |
 | `@designguard/adapter-nestjs` | NestJS controllers and GraphQL resolvers, their guards and parameter decorators |
 | `@designguard/adapter-authjs` | Auth.js and NextAuth's sessions |
+| `@designguard/adapter-phoenix-live-view` | Phoenix LiveView 1 hooks |
 
 An adapter matches the declarations calls resolve to, by their qualified names, not import paths. So calls through
 an app's own `db` module, re-exports and subclasses are recognized. An adapter that declares `versions` turns off
@@ -137,6 +140,19 @@ export default defineAdapter({
   ],
   users: ["getSession"], // calls that give the user asking
   checks: ["Router.requireRole"], // calls and decorators that check what they may do
+});
+```
+
+An adapter for a UI library says which parts of the page live and leave, and a library that starts things which run
+until stopped says how they stop:
+
+```ts
+export default defineAdapter({
+  name: "my-widgets",
+  packages: ["my-widgets"],
+  // an object given the Widget type, or a class that extends it; this.root is its element
+  lifecycles: [{ type: "Widget", stops: "unmount", element: ["root"], part: "the widget" }],
+  resources: [{ starts: "Ticker.start", stops: "Ticker.stop", what: "ticker" }],
 });
 ```
 

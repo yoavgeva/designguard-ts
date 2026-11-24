@@ -1,0 +1,28 @@
+{
+  "name": "@designguard/adapter-phoenix-live-view",
+  "version": "0.0.0",
+  "description": "designguard's adapter for Phoenix LiveView hooks.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoavgeva/designguard-ts.git",
+    "directory": "packages/adapters/phoenix-live-view"
+  },
+  "homepage": "https://github.com/yoavgeva/designguard-ts#readme",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@designguard/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@designguard/adapter-kit": "workspace:*"
+  }
+}

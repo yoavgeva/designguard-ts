@@ -99,6 +99,43 @@ export interface ListSpec {
 }
 
 /**
+ * Something that runs until it's stopped, as a listener, an interval, an observer or a socket: the call, or the class
+ * whose `new` starts it, and the calls that stop it.
+ */
+export interface ResourceSpec {
+  /** A pattern over the qualified name of the call, or of the class constructed, as `*.addEventListener` or `WebSocket`. */
+  readonly starts: string;
+  readonly stops: string;
+  /** What it is, for messages: `listener`, `interval`. */
+  readonly what: string;
+  /** The argument that says which one, matched with the stop's when both are strings: an event's type. */
+  readonly key?: number;
+  /** The argument whose `signal` property hands stopping to an `AbortController`, as a listener's options do. */
+  readonly signal?: number;
+  /** Whether it goes with the object it's started on, as a listener on an element goes with the element. */
+  readonly onTarget?: boolean;
+}
+
+/**
+ * Code that runs while a part of the page is on it and must stop what it starts when the part leaves: a Phoenix
+ * LiveView hook, whose `destroyed` runs then, or a custom element, whose `disconnectedCallback` does. A part is an
+ * object literal given the type, or a class that extends or implements it.
+ */
+export interface LifecycleSpec {
+  /** A pattern over the qualified name of the type, as LiveView's `{Hook,ViewHook}` or the DOM's `HTMLElement`. */
+  readonly type: string;
+  /** A pattern over the names of the methods that run when the part leaves the page. */
+  readonly stops: string;
+  /**
+   * Where the part's own element is, read from `this`: `["el"]` for a hook's `this.el`, `[]` when `this` is the
+   * element. Listeners on it, and on elements inside it, go with it.
+   */
+  readonly element?: readonly string[];
+  /** What the part is, for messages: `the hook`. */
+  readonly part: string;
+}
+
+/**
  * What designguard knows about a library: data, so ESLint can cache and print the configuration that holds it.
  * `packages` are the npm packages whose declarations the patterns match.
  */
@@ -133,6 +170,8 @@ export interface Adapter {
   readonly locks?: string;
   /** A pattern over the names of decorators that make a property an entity's version, as TypeORM's `VersionColumn`. */
   readonly versioned?: string;
+  readonly resources?: readonly ResourceSpec[];
+  readonly lifecycles?: readonly LifecycleSpec[];
 }
 
 export function defineAdapter<const A extends Adapter>(adapter: A): A {

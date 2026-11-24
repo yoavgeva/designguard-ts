@@ -8,6 +8,7 @@ import { type FunctionLike, isProjectSource, resolveCall } from "./resolve.js";
 import { callee, oneLine } from "./names.js";
 import { type EntryPoint, entriesOf, type EntrySpecs } from "./entries.js";
 import { flowOf } from "./flow.js";
+import { type Leak, lifecycleLeaks } from "./lifecycles.js";
 import { standards } from "./standards.js";
 import {
   type CallSite,
@@ -116,6 +117,8 @@ export interface Analysis {
   massAssignments(file: ts.SourceFile): Finding[];
   /** Writes of a value computed from one read before, which a change made between them is lost to. */
   lostUpdates(file: ts.SourceFile): Finding[];
+  /** What a part of the page, as a LiveView hook or a custom element, starts and never stops when it leaves. */
+  lifecycleLeaks(file: ts.SourceFile): Finding[];
   unknownIo(file: ts.SourceFile): Finding[];
   /** What the adapters make of each call a file makes into a package, in the order the calls start. */
   roles(file: ts.SourceFile): Role[];
@@ -189,6 +192,16 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
   });
   const covered = new Set(adapters.flatMap((adapter) => adapter.packages));
   const claims = claimsOf(adapters);
+  const leaksOf = lifecycleLeaks(program, adapters, claims);
+  const at = (node: ts.Node): string => {
+    const source = node.getSourceFile();
+    return `${relative(root, source.fileName)}:${String(source.getLineAndCharacterOfPosition(node.getStart()).line + 1)}`;
+  };
+  const leakMessage = (leak: Leak): string => {
+    const stops = `${leak.stops.join("() or ")}()`;
+    const what = leak.through.length === 0 ? `starts ${leak.label}` : `calls ${callee(leak.through[0]?.call.expression ?? leak.node as ts.Expression)}(), which starts ${leak.label} (${at(leak.started)}),`;
+    return `${what} that ${stops} never stops: each time ${leak.part} leaves the page it keeps running and keeps ${leak.part} in memory`;
+  };
   const matchers = adapters.flatMap((adapter) =>
     (adapter.effects ?? []).map((effect) => ({ packages: adapter.packages, pattern: glob(effect.on), kind: effect.kind })),
   );
@@ -770,6 +783,14 @@ function build(program: ts.Program, configured: readonly Adapter[], key: string,
         );
       }
       return findings;
+    },
+    lifecycleLeaks(file) {
+      return leaksOf(file).map((leak) => ({
+        node: leak.node,
+        message: leakMessage(leak),
+        at: placeOf(leak.method ?? leak.node.getSourceFile()),
+        reaching: leak.through.map((step) => placeOf(step.target)),
+      }));
     },
     queriesInLoops(file) {
       const findings: Finding[] = [];
