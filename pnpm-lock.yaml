@@ -112,6 +112,16 @@ importers:
         specifier: workspace:*
         version: link:../../adapter-kit
 
+  packages/adapters/phoenix-live-view:
+    dependencies:
+      '@designguard/core':
+        specifier: workspace:*
+        version: link:../../core
+    devDependencies:
+      '@designguard/adapter-kit':
+        specifier: workspace:*
+        version: link:../../adapter-kit
+
   packages/adapters/prisma:
     dependencies:
       '@designguard/core':
